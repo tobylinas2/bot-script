@@ -1,0 +1,7 @@
+# 煤炭警戒 bot —— 脚本包清单（能力自述；边界/连接在实例部署配置，DESIGN §6）
+name: coal-guard-1
+scripts: [coal_guard.lua]
+params:
+  range: { type: number, default: 24, visible: true, help: "警戒半径（格）" }
+  spin:  { type: number, default: 120, visible: true, help: "旋转速度（度/秒）" }
+persist: ./data/coal-guard-1.sqlite

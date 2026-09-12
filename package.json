@@ -1,0 +1,21 @@
+{
+  "name": "bot-script",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "bot-script 引擎 + mineflayer 驱动（见 DESIGN.md / CAPABILITIES.md）",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "bot": "node engine/cli.js",
+    "test": "node engine/test/run.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "wasmoon": "^1.7.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.8.1"
+  }
+}

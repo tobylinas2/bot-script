@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "botscript-mod",
+  "version": "${version}",
+  "name": "bot-script 客户端 mod",
+  "description": "bot-script fabric 宿主（v2 standalone）：内嵌 Lua 运行时直接执行脚本包，无需外部进程（CAPABILITIES.md §16）",
+  "authors": [
+    "bot-script"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.botscript.mod.BotScriptMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.8",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "mixins": [
+    "botscript.mixins.json"
+  ]
+}

@@ -1,0 +1,13 @@
+# heart 实连演示部署（mineflayer 宿主，触发式）：
+# 先 bash examples/heart/reset-demo.sh 建场景，再 node engine/cli.js examples/heart/demo-mineflayer.yaml
+# 范围内重新放置一个箱身补全双箱即触发。fabric 宿主演示：把 examples/heart 整目录
+# 复制到 <游戏目录>/botscript/heart/，经 GUI/HTTP 设置 params.source/target 后进世界。
+package: .
+server: 127.0.0.1:25565
+version: "1.21.8"
+account: heart_bot
+boundary:
+  fence: [[-80, -480], [260, 240]]
+  blocks: { dig: deny, place: deny }
+  chat: { say_rate: "2/min", commands: [] }
+  authority: { op: ["MixTobyInjTick"] }

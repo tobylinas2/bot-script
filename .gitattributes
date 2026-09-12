@@ -1,0 +1,4 @@
+* text=auto eol=lf
+gradle-wrapper.jar binary
+*.jar binary
+*.png binary

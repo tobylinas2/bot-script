@@ -1,0 +1,10 @@
+# 整理 bot —— 脚本包清单（能力自述：跨服务器通用，DESIGN §6）
+# 实例坐标不在包里：运行期经控制渠道（HTTP /params、param 命令、GUI）设置后持久化
+name: organizer-1
+scripts: [organizer.lua]
+params:
+  input:          { type: blockpos, required: true, visible: true, help: "待整理物品的输入箱" }
+  stock_zone:     { type: region,   required: true, help: "库存/不满盒扫描区域" }
+  partial_chests: { type: "list<blockpos>", default: [], visible: true, help: "手工登记的不满盒" }
+  paused:         { type: bool, default: false, visible: true, help: "暂停整理" }
+persist: ./data/organizer-1.sqlite

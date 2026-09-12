@@ -1,0 +1,11 @@
+# 自验证巡检 bot —— 脚本包清单（能力自述；边界/连接在实例部署配置，DESIGN §6）
+# tour 逐领域跑 PASS/FAIL 自检并输出 SUMMARY 行：验收只看日志（HTTP /logs），
+# 不需要截图/视觉分析。覆盖：感知/实体/移动/方块/容器背包/并发/定时/持久化/聊天事件/错误处理/参数。
+name: tour-1
+scripts: [tour.lua]
+params:
+  chest:    { type: blockpos, default: [121,151,-300], visible: true, help: "容器测试箱（需含可回存材料）" }
+  pad:      { type: blockpos, default: [126,151,-294], visible: true, help: "放置测试落点（羊毛落在此格）" }
+  outside:  { type: blockpos, default: [115,151,-287], visible: true, help: "围栏外目标（应被策略拒绝）" }
+  material: { type: string, default: minecraft:pink_wool, visible: true, help: "放置材料" }
+persist: ./data/tour-1.sqlite

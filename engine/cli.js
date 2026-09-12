@@ -1,0 +1,121 @@
+// engine/cli.js — mineflayer 宿主实例运行器（v2 standalone：无引擎进程拓扑中的 Node 端）
+// 用法：node engine/cli.js <deploy.yaml> [--dry-run]
+//   deploy.yaml = 实例部署配置（DESIGN §6）：package/server/account/boundary/runtime
+//   包清单（bot.yaml：name/scripts/params schema/persist）从 package 目录加载
+// 控制台命令（console 权限）：pause / resume / status / quit
+// HTTP 控制通道常开（CAPABILITIES §17）：127.0.0.1 + 自动 token，启动时打印；
+// 覆盖仅经 env（BOTSCRIPT_HTTP_PORT / BOTSCRIPT_HTTP_TOKEN）。
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { parse } from 'yaml';
+import { BotEngine } from './engine.js';
+import { startHttpApi } from './httpapi.js';
+
+const [, , firstArg, ...rest] = process.argv;
+
+// validate 子命令：包静态校验（不连服务器、不执行脚本）——node engine/cli.js validate <包目录|deploy.yaml>
+// 经子进程调起：大源文件编译会触发 wasmoon 退出期 libuv 断言污染退出码，
+// 子进程输出末尾的 __BS_VALIDATE__ 标记行才是裁决依据
+if (firstArg === 'validate') {
+  const target = rest[0];
+  if (!target) {
+    console.error('用法：node engine/cli.js validate <包目录 | deploy.yaml>');
+    process.exit(1);
+  }
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./validate.js', import.meta.url)), target], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  let out = '';
+  child.stdout.on('data', (c) => { out += c; });
+  child.on('close', () => {
+    const markerIdx = out.indexOf('__BS_VALIDATE__ ');
+    const human = markerIdx >= 0 ? out.slice(0, markerIdx) : out;
+    process.stdout.write(human);
+    if (markerIdx >= 0) {
+      const json = out.slice(markerIdx + '__BS_VALIDATE__ '.length).trim();
+      try {
+        process.exit(JSON.parse(json).ok ? 0 : 1);
+      } catch { /* fall through */ }
+    }
+    console.error('[validate] 子进程未产出结果标记');
+    process.exit(1);
+  });
+} else {
+  runBot(firstArg, rest.includes('--dry-run'));
+}
+
+function runBot(yamlPath, dryRunFlag) {
+if (!yamlPath) {
+  console.error('用法：node engine/cli.js <deploy.yaml> [--dry-run] | validate <包目录 | deploy.yaml>');
+  process.exit(1);
+}
+const abs = path.resolve(yamlPath);
+const deploy = parse(readFileSync(abs, 'utf8')) ?? {};
+
+// 包清单：从 package 目录加载（能力自述，不含边界/凭据）
+const pkgDir = path.resolve(path.dirname(abs), deploy.package ?? '.');
+const pkg = parse(readFileSync(path.join(pkgDir, 'bot.yaml'), 'utf8')) ?? {};
+
+// 连接（连接层随宿主部署）：server "host:port" + account（用户名或对象）
+function parseServer(s) {
+  if (typeof s === 'string') {
+    const [host, port] = s.split(':');
+    return { host: host || '127.0.0.1', port: port ? Number(port) : 25565 };
+  }
+  return { host: s?.host ?? '127.0.0.1', port: s?.port ?? 25565 };
+}
+const server = parseServer(deploy.server);
+const account = typeof deploy.account === 'string' ? { username: deploy.account } : (deploy.account ?? {});
+// mineflayer 驱动 connect 契约：{host, port, version, account:{username,password}}
+const connect = {
+  host: server.host,
+  port: server.port,
+  version: deploy.version ?? deploy.server_version,
+  account,
+};
+
+// persist 相对路径解析到实例数据根（= 部署文件所在目录；随实例隔离，DESIGN §5.2）
+const pkgAbs = {
+  ...pkg,
+  persist: pkg.persist ? path.resolve(path.dirname(abs), pkg.persist) : ':memory:',
+};
+
+async function main() {
+  const { MineflayerDriver } = await import('../drivers/mineflayer/index.js');
+  const driver = new MineflayerDriver({ log: (m) => console.log(m) });
+
+  const engine = new BotEngine(pkgAbs, driver, {
+    scriptDir: pkgDir,
+    boundary: deploy.boundary ?? null,   // 无 boundary = 观察模式（§5.1 默认全拒）
+    runtime: deploy.runtime ?? {},
+    dryRun: dryRunFlag,
+    connect,
+  });
+
+  const shutdown = async () => {
+    console.log('\n[cli] 停机 = 进程退出（无 on_stop）');
+    await engine.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => {
+    for (const line of d.toString().split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t === 'quit' || t === 'exit') { shutdown(); return; }
+      engine.dispatchCommand(t, null, true);
+    }
+  });
+
+  await engine.start();
+  await startHttpApi(engine, { log: (level, msg) => console.log(`[${level}] ${msg}`) });
+  }
+
+  main().catch((e) => {
+    console.error('[cli] 启动失败:', e);
+    process.exit(1);
+  });
+}
