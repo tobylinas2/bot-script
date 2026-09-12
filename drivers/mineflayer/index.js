@@ -78,6 +78,14 @@ export class MineflayerDriver {
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
 
+    // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED，否则服务器（如 Velocity 群组服
+    // 推自定义资源包）会持有配置阶段不发 finish_configuration，登录卡死且无任何报错。
+    // mineflayer 内置插件传 uuid-1345 对象，服务器无法匹配其推送，形同未确认。
+    bot._client.on('add_resource_pack', (p) => {
+      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 3 });   // ACCEPTED
+      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 0 });   // SUCCESSFULLY_LOADED
+    });
+
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));
     bot.once('spawn', () => {
       this.emit('session', {
