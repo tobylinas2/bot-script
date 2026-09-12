@@ -346,7 +346,8 @@ persist: ./data/hauler-1.sqlite
 # 实例部署配置（每服务器一份；形态随宿主：mineflayer=启动参数/yaml，fabric=游戏目录配置，mcc=控制台）
 package: ./hauler-1                # 指向脚本包
 server: 127.0.0.1:25565
-account: bot1                      # 凭据（或走启动器）
+account: bot1                      # 凭据：用户名（offline）| {username, password}（微软 OAuth）
+                                   # | {auth: session, username, uuid, accessToken}（托管平台注入，引擎不做 OAuth）
 boundary:                          # 授权边界：默认全拒，未授即禁（§5.1）
   fence: [[80,-30],[140,20]]
   blocks: { dig: deny, place: deny }

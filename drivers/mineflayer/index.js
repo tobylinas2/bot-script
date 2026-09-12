@@ -48,15 +48,34 @@ export class MineflayerDriver {
     const pf = pfMod.default ?? pfMod;
     this.pf = typeof pf === 'function' ? pf : pf.pathfinder;
     this.pfMod = pf;
-    const bot = mineflayer.createBot({
+    const acct = cfg.account ?? {};
+    const botOpts = {
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 25565,
-      username: cfg.account?.username ?? 'bot',
-      password: cfg.account?.password,
-      auth: cfg.account?.password ? 'microsoft' : 'offline',
+      username: acct.username ?? 'bot',
       version: cfg.version ?? undefined,
       hideErrors: false,
-    });
+    };
+    if (acct.auth === 'session') {
+      // 平台注入会话（credential 服务签发 accessToken，引擎不做任何 OAuth 流程）。
+      // 与 minecraft-protocol microsoftAuth.authenticate 的注入完成形态对齐：
+      // 在线服时 encrypt.js 拿 options.accessToken + client.session.selectedProfile.id 走会务器 join
+      botOpts.auth = (client, options) => {
+        const profile = { id: acct.uuid, name: acct.username };
+        options.haveCredentials = true;
+        options.accessToken = acct.accessToken;
+        client.session = { accessToken: acct.accessToken, selectedProfile: profile, availableProfiles: [profile] };
+        client.username = acct.username;
+        client.emit('session', client.session);
+        options.connect(client);
+      };
+    } else if (acct.password) {
+      botOpts.password = acct.password;
+      botOpts.auth = 'microsoft';
+    } else {
+      botOpts.auth = 'offline';
+    }
+    const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
 
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));

@@ -68,7 +68,9 @@ function parseServer(s) {
 }
 const server = parseServer(deploy.server);
 const account = typeof deploy.account === 'string' ? { username: deploy.account } : (deploy.account ?? {});
-// mineflayer 驱动 connect 契约：{host, port, version, account:{username,password}}
+// mineflayer 驱动 connect 契约：{host, port, version, account}
+//   account = {username, password}（微软 OAuth）| {auth:'session', username, uuid, accessToken}（平台注入）
+//   | {username}（offline）
 const connect = {
   host: server.host,
   port: server.port,

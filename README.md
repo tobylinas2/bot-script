@@ -90,6 +90,9 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
   归一化为引擎布局（hotbar 0-8 / main 9-35 / armor 36-39 / offhand 40）；
   容器窗口 = 容器区 [0,size) + 玩家区（main 在 size..size+26，hotbar 在 size+27..size+35）。
 - 物品 id：统一规范名 `minecraft:x`（驱动侧 CANON，脚本侧直接比较）。
+- 账号三态：`account: 用户名`（offline）| `{username, password}`（微软 OAuth，驱动内走完整流程）
+  | `{auth: session, username, uuid, accessToken}`（托管平台注入——引擎不做 OAuth，
+  accessToken 由平台凭据服务签发，在线服加入时经会务器校验）。
 - nav 超时单位 = 秒（与设计样例 `timeout = 3` 一致）；walk 失败返回 `{ok=false, reason}`
   而非抛错（样例语义：目标在动，由循环自然重试），nav.failed 事件同步发出。
   API 命名 `nav.walk`（不叫 goto：goto 是 Lua 保留字，点号访问是语法错误）；
