@@ -6,7 +6,7 @@ params:
   auto_accept_tpa:  { type: boolean, default: true, desc: 未锁定时自动接受 tpa/tpahere }
   anti_afk:         { type: boolean, default: true, desc: 定期微调视角防挂机检测 }
   whisper_marker:   { type: string, default: 'whispers to you:,whispers:', desc: 私聊识别标记（逗号分隔，命中后的文本为命令） }
-  tpa_to_keyword:   { type: string, default: '请求传送到你身边', desc: tpa 请求关键词（对方传送到 bot） }
+  tpa_to_keyword:   { type: string, default: '请求传送到你的位置', desc: tpa 请求关键词（对方传送到 bot） }
   tpahere_keyword:  { type: string, default: '请求你传送', desc: tpahere 请求关键词（bot 被请求过去） }
   tp_accept_cmd:    { type: string, default: '/tpaccept {player}', desc: 接受传送命令模板，player 为占位符 }
 persist: ./data/afk.sqlite

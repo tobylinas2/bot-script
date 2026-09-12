@@ -17,7 +17,7 @@ params {
   auto_accept_tpa = { type = 'boolean', default = true, visible = true, help = '未锁定时自动接受 tpa/tpahere' },
   anti_afk        = { type = 'boolean', default = true, visible = true, help = '定期微调视角防挂机检测' },
   whisper_marker  = { type = 'string',  default = 'whispers to you:,whispers:', visible = true, help = '私聊识别标记（逗号分隔）' },
-  tpa_to_keyword  = { type = 'string',  default = '请求传送到你身边', visible = true, help = 'tpa 请求关键词' },
+  tpa_to_keyword  = { type = 'string',  default = '请求传送到你的位置', visible = true, help = 'tpa 请求关键词' },
   tpahere_keyword = { type = 'string',  default = '请求你传送', visible = true, help = 'tpahere 请求关键词' },
   tp_accept_cmd   = { type = 'string',  default = '/tpaccept {player}', visible = true, help = '接受传送命令模板（{player} 占位）' },
   debug_chat      = { type = 'boolean', default = true, visible = true, help = '在日志输出每条收到的聊天（诊断用）' },
@@ -134,7 +134,10 @@ local function handle_tpa(msg)
   if raw:find(tostring(params.tpa_to_keyword), 1, true) then kind = 'tpa'
   elseif raw:find(tostring(params.tpahere_keyword), 1, true) then kind = 'tpahere' end
   if not kind then return end
-  local name = raw:match('^(%S+)')                     -- 请求者名 = 提示行行首词
+  -- 请求者名 = 关键词前最近的非空白 token（行首可能是 [TSL] 之类的频道标签）
+  local kw = kind == 'tpa' and tostring(params.tpa_to_keyword) or tostring(params.tpahere_keyword)
+  local pos = raw:find(kw, 1, true)
+  local name = pos and raw:sub(1, pos - 1):match('(%S+)%s*$') or nil
   if not name or name == '' then return end
   if persist.seen('tpa:' .. name .. ':' .. kind, 8000) then return end   -- 多行提示去重
   chat.run_command((tostring(params.tp_accept_cmd)):gsub('{player}', name))
