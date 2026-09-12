@@ -12,6 +12,7 @@
 -- ============================================================
 
 params {
+  bot_name        = { type = 'string',  default = 'MixTobyInjSave', visible = true, help = 'bot 进服玩家名' },
   super_admin     = { type = 'string',  default = '',  visible = true, help = '超级管理员玩家名（唯一）' },
   auto_accept_tpa = { type = 'boolean', default = true, visible = true, help = '未锁定时自动接受 tpa/tpahere' },
   anti_afk        = { type = 'boolean', default = true, visible = true, help = '定期微调视角防挂机检测' },
@@ -48,7 +49,17 @@ local function markers()
   return list
 end
 
--- 私聊解析：raw 命中任一标记 → 标记后的文本为命令，发送者取 driver 解析结果或标记前的行首词
+-- 私聊解析一：方括号私聊格式 [发送者 ➦ 接收者] 内容（全系统消息服，如 zenoxs）
+--   接收者必须等于 bot_name，防止把别人的私聊/频道消息当成对自己的命令
+local function parse_bracket(msg)
+  local sender, recipient, text = (msg.raw or ''):match('^%[(%S+)%s*➦%s*(%S+)%]%s*(.+)$')
+  if sender and recipient == tostring(params.bot_name) and text ~= '' then
+    return sender, text:match('^%s*(.-)%s*$')
+  end
+  return nil
+end
+
+-- 私聊解析二：raw 命中任一标记 → 标记后的文本为命令，发送者取 driver 解析结果或标记前的行首词
 local function parse_whisper(msg)
   for _, marker in ipairs(markers()) do
     local i = string.find(msg.raw or '', marker, 1, true)
@@ -133,7 +144,8 @@ on_chat(rex'^', function(msg)
   if params.debug_chat ~= false then
     log.info('chat kind=%s from=%s | raw=%s', tostring(msg.sender_kind), tostring(msg.sender), tostring(msg.raw):sub(1, 90))
   end
-  local from, text = parse_whisper(msg)
+  local from, text = parse_bracket(msg)
+  if not from then from, text = parse_whisper(msg) end
   if from then
     handle_whisper(from, text)
     return

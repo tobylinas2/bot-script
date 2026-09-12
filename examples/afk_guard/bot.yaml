@@ -1,6 +1,7 @@
 name: afk_guard
 scripts: [afk.lua]
 params:
+  bot_name:         { type: string, default: 'MixTobyInjSave', desc: bot 进服玩家名（私聊括号格式的接收者校验） }
   super_admin:      { type: string, default: '', desc: 超级管理员玩家名（唯一，可增删管理员） }
   auto_accept_tpa:  { type: boolean, default: true, desc: 未锁定时自动接受 tpa/tpahere }
   anti_afk:         { type: boolean, default: true, desc: 定期微调视角防挂机检测 }
