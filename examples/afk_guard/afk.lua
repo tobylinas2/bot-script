@@ -49,11 +49,14 @@ local function markers()
   return list
 end
 
--- 私聊解析一：方括号私聊格式 [发送者 ➦ 接收者] 内容（全系统消息服，如 zenoxs）
+-- 私聊解析一：方括号私聊格式 [发送者 <箭头> 接收者] 内容（全系统消息服，如 zenoxs）
+--   箭头字形不参与匹配（该服为 ➥，截图复制易混 ➦），按括号内三个非空白 token 拆分
 --   接收者必须等于 bot_name，防止把别人的私聊/频道消息当成对自己的命令
 local function parse_bracket(msg)
-  local sender, recipient, text = (msg.raw or ''):match('^%[(%S+)%s*➦%s*(%S+)%]%s*(.+)$')
-  if sender and recipient == tostring(params.bot_name) and text ~= '' then
+  local head, text = (msg.raw or ''):match('^%[([^%]]+)%]%s*(.+)$')
+  if not head then return nil end
+  local sender, arrow, recipient = head:match('^(%S+)%s+(%S+)%s+(%S+)$')
+  if sender and arrow and recipient == tostring(params.bot_name) and text ~= '' then
     return sender, text:match('^%s*(.-)%s*$')
   end
   return nil
