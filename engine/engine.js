@@ -457,6 +457,7 @@ export class BotEngine {
 
   async stop() {
     this.stopped = true;
+    clearTimeout(this.reconnectTimer);
     for (const t of this.activeTimers) clearTimeout(t);
     try { await this.driver.stop?.(); } catch { /* ignore */ }
     this.persist?.close();
@@ -467,6 +468,7 @@ export class BotEngine {
     this.sessionState = p.state;
     if (p.info) this.sessionInfo = p.info;
     if (p.state === 'playing' && prev !== 'playing') {
+      this.reconAttempts = 0;   // 重连成功：退避计数清零
       if (!this.handledSpawn) {
         this.handledSpawn = true;
         // session.ready = playing + 首圈 chunk（尽力而为：spawn 后短暂延迟）
@@ -479,7 +481,28 @@ export class BotEngine {
     if ((p.state === 'kicked' || p.state === 'disconnected') && !this.stopped) {
       this.log('warn', `[${this.name}] 会话 ${p.state}: ${p.reason ?? ''} -> 自动 pause`);
       this.pause(p.state === 'kicked' ? 'kicked' : 'disconnect');
+      this.scheduleReconnect();   // 基础能力：自动重连（退避 30s→120s 封顶）
     }
+  }
+
+  scheduleReconnect() {
+    if (this.stopped || this.reconnectTimer || this.runtimeCfg.dry_run) return;
+    this.reconAttempts = (this.reconAttempts ?? 0) + 1;
+    const delay = Math.min(120000, 30000 * this.reconAttempts);
+    this.log('info', `[${this.name}] ${Math.round(delay / 1000)}s 后尝试重连（第 ${this.reconAttempts} 次）`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.stopped || this.sessionState === 'playing') return;
+      try {
+        await this.driver.connect(this.connectCfg);
+        this.sessionState = 'connecting';
+        this.log('info', `[${this.name}] 重连尝试已发起`);
+      } catch (e) {
+        this.log('error', `[${this.name}] 重连发起失败: ${e.message}`);
+        this.scheduleReconnect();
+      }
+    }, delay);
+    this.activeTimers.push(this.reconnectTimer);
   }
 
   fireReady() {
