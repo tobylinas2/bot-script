@@ -72,8 +72,15 @@ export class MineflayerDriver {
     } else if (acct.password) {
       botOpts.password = acct.password;
       botOpts.auth = 'microsoft';
+    } else if (acct.uuid) {
+      // 离线 + 指定 UUID：Login Start 的 playerUUID 用它（仅离线服有效；在线服必须走 auth:session）
+      botOpts.auth = (client, options) => {
+        client.session = { selectedProfile: { id: acct.uuid, name: acct.username } };
+        client.username = acct.username;
+        options.connect(client);
+      };
     } else {
-      botOpts.auth = 'offline';
+      botOpts.auth = 'offline';   // mc-protocol 按 nameToMcOfflineUUID(username) 稳定派生
     }
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
