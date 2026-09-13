@@ -494,7 +494,8 @@ export class BotEngine {
       this.reconnectTimer = null;
       if (this.stopped || this.sessionState === 'playing') return;
       try {
-        await this.driver.connect(this.connectCfg);
+        if (this.driver.reconnect) await this.driver.reconnect(this.connectCfg);
+        else await this.driver.connect(this.connectCfg);
         this.sessionState = 'connecting';
         this.log('info', `[${this.name}] 重连尝试已发起`);
       } catch (e) {

@@ -34,9 +34,11 @@ local function parse_bracket(msg)
 end
 
 on_chat(rex('^'), function(msg)
+  local raw = msg.raw or ''
+  if raw:match('^%[TSL') then log.info('TSL 原文: %s', raw) end   -- 经济消息审计（识别 pattern 用）
   local sender, text = parse_bracket(msg)
   if sender then
-    if not text:match('^登录') and not text:match('^绑定') then return end   -- 其余指令归 afk.lua
+    if not (text:match('^登录') or text:match('^绑定') or text:match('^余额') or text:match('^充值') or text:match('^索取兑换码')) then return end   -- 其余指令归 afk.lua
     if tostring(params.service_token) == '' then
       return reply(sender, '平台服务未就绪（service_token 未配置），请联系管理员')
     end
@@ -50,7 +52,12 @@ on_chat(rex('^'), function(msg)
 
   local pat = tostring(params.transfer_pattern)
   if pat == '' then return end
-  local payer, amount = (msg.raw or ''):match(pat)
+  local payer, amount
+  if raw:match('你已支付') then
+    -- 付款人视角副本：金额给 bot，但付款人名不在文本里，跳过（等收款人副本）
+    return
+  end
+  payer, amount = raw:match(pat)
   if not payer or not amount then return end
   if tostring(params.service_token) == '' then return end
   local ok, data_or_err = pcall(api, '/api/tsl/transfer', { player = payer, amount = tonumber(amount) })

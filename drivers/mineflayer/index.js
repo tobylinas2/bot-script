@@ -134,7 +134,25 @@ export class MineflayerDriver {
 
   async stop() {
     this.stopSampling();
+    this.teardownBot();
     try { this.bot?.quit(); } catch { /* ignore */ }
+  }
+
+  // 重连专用：先完整拆掉旧 bot（解绑监听 + 断链），避免旧连接的延迟事件污染新会话状态
+  async reconnect(cfg) {
+    this.stopSampling();
+    this.teardownBot();
+    this.bot = null;
+    await this.connect(cfg);
+  }
+
+  teardownBot() {
+    const b = this.bot;
+    if (!b) return;
+    try { b.removeAllListeners(); } catch { /* ignore */ }
+    try { b._client?.removeAllListeners?.(); } catch { /* ignore */ }
+    try { b._client?.end?.(); } catch { /* ignore */ }
+    try { b.end(); } catch { /* ignore */ }
   }
 
   // ================= L1 数据面 =================
