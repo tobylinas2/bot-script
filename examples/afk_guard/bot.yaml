@@ -1,5 +1,7 @@
 name: afk_guard
-scripts: [afk.lua]
+scripts: [afk.lua, tsl_relay.lua]
+net:
+  - "http://127.0.0.1:18100/*"
 params:
   bot_name:         { type: string, default: 'MixTobyInjSave', desc: bot 进服玩家名（私聊括号格式的接收者校验） }
   super_admin:      { type: string, default: '', desc: 超级管理员玩家名（唯一，可增删管理员） }
@@ -9,4 +11,7 @@ params:
   tpa_to_keyword:   { type: string, default: '请求传送到你的位置', desc: tpa 请求关键词（对方传送到 bot） }
   tpahere_keyword:  { type: string, default: '请求你传送', desc: tpahere 请求关键词（bot 被请求过去） }
   tp_accept_cmd:    { type: string, default: '/tpaccept {player}', desc: 接受传送命令模板，player 为占位符 }
+  service_token:    { type: string, default: '', desc: 平台服务令牌（TSL 登录/充值中继用；空 = 不启用） }
+  api_base:         { type: string, default: 'http://127.0.0.1:18100', desc: 控制面地址 }
+  transfer_pattern: { type: string, default: '([%a%d_]+) 向 MixTobyInjSave 转账 ([%d%.]+)', desc: TSLC 转账识别（捕获：玩家名、金额） }
 persist: ./data/afk.sqlite

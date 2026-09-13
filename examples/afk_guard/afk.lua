@@ -82,6 +82,7 @@ end
 -- ---------- 命令处理 ----------
 
 local function handle_whisper(from, text)
+  if text:match('^登录') or text:match('^绑定') then return end   -- tsl_relay.lua 处理
   local words = {}
   for w in string.gmatch(text, '%S+') do words[#words + 1] = w end
   local cmd = words[1]
