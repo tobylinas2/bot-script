@@ -49,12 +49,15 @@ export class MineflayerDriver {
     this.pf = typeof pf === 'function' ? pf : pf.pathfinder;
     this.pfMod = pf;
     const acct = cfg.account ?? {};
+    const vd = Math.max(2, Math.min(12, Number(cfg.viewDistance) || 6));
     const botOpts = {
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 25565,
       username: acct.username ?? 'bot',
       version: cfg.version ?? undefined,
       hideErrors: false,
+      settings: { viewDistance: vd },              // mineflayer 登录时发送的客户端设置
+      clientSettings: { viewDistance: vd },        // mc-protocol play 期 settings（服务器据此发 chunk）
     };
     if (acct.auth === 'session') {
       // 平台注入会话（credential 服务签发 accessToken，引擎不做任何 OAuth 流程）。

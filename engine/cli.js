@@ -76,6 +76,7 @@ const connect = {
   port: server.port,
   version: deploy.version ?? deploy.server_version,
   account,
+  viewDistance: Math.max(2, Math.min(12, Number(deploy.view_distance) || 6)),   // 客户端视距（chunks）
 };
 
 // persist 相对路径解析到实例数据根（= 部署文件所在目录；随实例隔离，DESIGN §5.2）
