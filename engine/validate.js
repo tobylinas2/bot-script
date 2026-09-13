@@ -160,8 +160,14 @@ export async function validateFromArgv(arg) {
   const errors = problems.filter((p) => p.level === 'error').length;
   console.log(errors ? `FAIL：${errors} 个错误，${problems.length - errors} 个警告` : 'PASS（包校验通过）');
   const ok = errors === 0;
-  // 标记行先于退出 flush：父进程以行为准，无视子进程退出阶段的库断言
-  process.stdout.write(`__BS_VALIDATE__ ${JSON.stringify({ ok })}\n`, () => process.exit(ok ? 0 : 0));
+  // 标记行先于退出 flush：父进程以行为准，无视子进程退出阶段的库断言。
+  // manifest 随闸门上抛（平台入库存档）：仪表盘创建实例时用它渲染初始参数表单。
+  let manifest = null;
+  try {
+    const pkg = parse(readFileSync(path.join(pkgDir, 'bot.yaml'), 'utf8')) ?? {};
+    manifest = { name: pkg.name ?? null, scripts: pkg.scripts ?? [], params: pkg.params ?? {}, persist: pkg.persist ?? null };
+  } catch { /* 清单已在前面的校验里报错，这里只影响 manifest 附带 */ }
+  process.stdout.write(`__BS_VALIDATE__ ${JSON.stringify({ ok, report: problems, manifest })}\n`, () => process.exit(ok ? 0 : 0));
   return ok;
 }
 

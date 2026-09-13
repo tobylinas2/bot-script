@@ -181,6 +181,13 @@ export class MineflayerDriver {
   pushSelf() {
     const bot = this.bot;
     if (!bot?.entity) return;
+    // 背包快照：主背包(9-35) + 快捷栏(36-44) 共 36 格，供仪表盘可视化
+    const inv = [];
+    for (const it of bot.inventory?.items() ?? []) {
+      if (it.slot >= 9 && it.slot <= 44) {
+        inv.push({ slot: it.slot, id: it.name, count: it.count, name: it.displayName ?? it.name });
+      }
+    }
     this.emit('self', {
       pos: { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z },
       yaw: bot.entity.yaw, pitch: bot.entity.pitch,
@@ -188,6 +195,8 @@ export class MineflayerDriver {
       gamemode: bot.game?.gameMode,
       held: itemOf(bot.heldItem),
       heldSlot: bot.quickBarSlot ?? 0,
+      ping: bot.players?.[bot.username]?.ping ?? null,
+      inv,
     });
   }
 

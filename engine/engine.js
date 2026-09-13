@@ -841,7 +841,7 @@ ${e.stack ?? ''}`);
         defaults[k] = entry;
       }
     }
-    const values = { ...defaults };
+    const values = { ...defaults, ...(this.opts.instanceParams ?? {}) };
     // 类型转换（blockpos/region 列表形态 -> {x,y,z} / [corner, corner]）
     for (const [k, schema] of declared) {
       let v = values[k] ?? schema.default;

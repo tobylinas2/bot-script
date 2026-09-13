@@ -35,9 +35,9 @@ if (firstArg === 'validate') {
     process.stdout.write(human);
     if (markerIdx >= 0) {
       const json = out.slice(markerIdx + '__BS_VALIDATE__ '.length).trim();
-      try {
-        process.exit(JSON.parse(json).ok ? 0 : 1);
-      } catch { /* fall through */ }
+      // 标记行转发给父调用方（平台闸门以行为准，不能只依赖被库断言污染的退出码）
+      process.stdout.write(`__BS_VALIDATE__ ${json}\n`, () => process.exit(JSON.parse(json).ok ? 0 : 1));
+      return;
     }
     console.error('[validate] 子进程未产出结果标记');
     process.exit(1);
@@ -92,6 +92,7 @@ async function main() {
     scriptDir: pkgDir,
     boundary: deploy.boundary ?? null,   // 无 boundary = 观察模式（§5.1 默认全拒）
     runtime: deploy.runtime ?? {},
+    instanceParams: deploy.params ?? {},  // 平台实例参数（优先级：包默认 < 实例部署 < 持久化）
     dryRun: dryRunFlag,
     connect,
   });

@@ -63,8 +63,7 @@ export function startHttpApi(engine, { log = console.log } = {}) {
             paused: engine.paused,
             pause_reason: engine.pauseReason,
             self: s ? {
-              pos: s.pos, yaw: s.yaw, pitch: s.pitch,
-              health: s.health, food: s.food, gamemode: s.gamemode,
+              ...s,
               held: s.held ?? null,
             } : null,
             tasks: engine.taskListFull(),
