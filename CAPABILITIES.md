@@ -263,6 +263,33 @@ P0。
 
 ---
 
+### 3.13 `net` — 出站 HTTP（2026-09-13 实装）
+
+> 定位：沙箱内唯一的出站通道。生效条件 = **bot.yaml 清单 `net` 申请 ∩ 实例边界 `net` 授权**（通配符白名单；默认全拒——清单不申请或边界不授权，一律 `net.denied`）。
+
+```lua
+-- bot.yaml（申请）
+-- net:
+--   - "https://api.example.com/*"
+--   - "http://127.0.0.1:18100/*"     # 回环须显式写出
+
+local res = net.request({
+  url = "https://api.example.com/v1/ping",
+  method = "POST",                     -- GET/POST/PUT/PATCH/DELETE/HEAD
+  headers = { ["Content-Type"] = "application/json" },
+  body = '{"hello":1}',
+})
+-- res = { status, headers(小写键), body(字符串), truncated }；10s 超时，响应 >2MB 截断（truncated=true）
+
+local status, data = net.jrequest({ url = "..." })   -- 便捷：body 按 JSON 解码
+```
+
+- 通配符：`*` 匹配任意串（含 `/`）；匹配对象 = `origin + pathname`（query 不参与匹配，即放行任意 query）。
+- 安全默认：跳转不跟随（3xx 原样返回，防绕过白名单）；协议限 http/https；方案写入边界 JSON 的 `net` 键（如 `{"net":["https://api.example.com/*"]}`）。
+- 已知限制（MVP）：不做 DNS rebinding 防护（自托管单租户可接受）；请求体上限 256KB（引擎 MAX_BODY）。
+
+---
+
 ## 4. 事件目录（统一 `域.事件` 点分命名）
 
 > 命名规范：`域.事件`，全小写下划线，域 = 能力域名；目录**参考 mineflayer 事件系选取核心集**。

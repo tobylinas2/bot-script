@@ -84,6 +84,12 @@ function dist2d(a, b) {
 }
 function nowMs() { return Date.now(); }
 
+// net 通配符：`*` 匹配任意串（含 `/`）；非 * 部分按字面匹配。匹配对象 = origin + pathname（query 不参与）
+function netGlob(pat, url) {
+  const parts = pat.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp('^' + parts.join('.*') + '$').test(url);
+}
+
 // =====================================================================
 // Persist（node:sqlite；实例内一个文件，引擎侧全局串行事务）
 // =====================================================================
@@ -398,7 +404,14 @@ export class BotEngine {
     this.driver.on('respawn', () => this.event('self.respawned', {}));
     this.driver.on('damaged', (p) => this.event('self.damaged', p));
 
-    await this.driver.connect(this.connectCfg);
+    // 2.5) 连接。dry-run 跳过实连（对齐「不实连服务器」语义）：仅引导脚本 / HTTP / 动作空转
+    if (this.runtimeCfg.dry_run) {
+      this.sessionState = 'dry';
+      this.sessionInfo = { dry: true };
+      this.log('info', `[${this.name}] dry-run：跳过实连（脚本、net、HTTP 控制通道照常，动作空转）`);
+    } else {
+      await this.driver.connect(this.connectCfg);
+    }
 
     // 3) Lua VM
     await this.createLua();
@@ -786,6 +799,54 @@ ${e.stack ?? ''}`);
       if (this.started) this.activateTimer(t);
       else this.pendingTimers.push(t);
       return id;
+    });
+
+    // ---- net（出站 HTTP；CAPABILITIES §3.13：清单申请 ∩ 边界授权，通配符白名单） ----
+    G('__net_register', (j) => {
+      const req = JSON.parse(j || '{}');
+      const token = this.newToken();
+      this.tokens.get(token).kind = 'net';
+      // 拒绝 = 同步 settle（已结算标记 → yield 时经 __core_register_waiter 立即交付）；仍必须返回 token
+      const deny = (error, detail) => this.settle(token, '', JSON.stringify({ error, detail }));
+      try {
+        const u = new URL(String(req.url ?? ''));
+        if (!['http:', 'https:'].includes(u.protocol)) { deny('net.denied', `协议不允许: ${u.protocol}`); return token; }
+        const hit = (pats) => (pats ?? []).some((p) => netGlob(p, `${u.origin}${u.pathname}`));
+        if (!hit(this.cfg?.net)) { deny('net.denied', `包清单未申请出站: ${u.origin}${u.pathname}`); return token; }
+        if (!hit(this.policy?.net)) { deny('net.denied', `实例边界未授权出站: ${u.origin}${u.pathname}`); return token; }
+        const method = String(req.method ?? 'GET').toUpperCase();
+        if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method)) { deny('net.denied', `方法不允许: ${method}`); return token; }
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 10000);
+        this.activeTimers.push(to);
+        const headers = (req.headers && typeof req.headers === 'object' && !Array.isArray(req.headers))
+          ? Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [String(k), String(v)])) : undefined;
+        fetch(u, {
+          method,
+          headers,
+          body: ['GET', 'HEAD'].includes(method) ? undefined : String(req.body ?? ''),
+          signal: ctrl.signal,
+          redirect: 'manual',   // 跳转不跟：避免借 3xx 绕过白名单
+        }).then(async (r) => {
+          clearTimeout(to);
+          const buf = Buffer.from(await r.arrayBuffer());
+          const hs = {};
+          r.headers.forEach((v, k) => { hs[k] = v; });
+          // 2MB 响应截断（截断在 headers 里注明）
+          const truncated = buf.length > (2 << 20);
+          this.settle(token, JSON.stringify({
+            status: r.status, headers: hs,
+            body: buf.toString('utf8', 0, 2 << 20),
+            truncated,
+          }), '');
+        }).catch((e) => {
+          clearTimeout(to);
+          this.settle(token, '', JSON.stringify({ error: 'net.failed', detail: String(e?.cause?.message ?? e.message ?? e) }));
+        });
+      } catch (e) {
+        this.settle(token, '', JSON.stringify({ error: 'net.failed', detail: String(e?.message ?? e) }));
+      }
+      return token;
     });
 
     this.registerParamsBridge();

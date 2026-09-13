@@ -730,6 +730,28 @@ log = {
   error = function(...) __log("error", string.format(...)) end,
 }
 
+-- ---------- net（出站 HTTP；CAPABILITIES §3.13） ----------
+-- 生效条件：bot.yaml 清单 `net` 申请 ∩ 实例边界 `net` 授权（通配符，默认全拒）。
+-- request 阻塞至响应（task 内 yield），返回 {status, headers, body, truncated}；
+-- 拒绝/网络失败抛类型化错误（net.denied / net.failed）。
+net = {
+  request = function(opts)
+    if type(opts) ~= "table" or opts.url == nil then
+      error({ error = "net.bad_request", detail = "opts.url 必填" }, 0)
+    end
+    return await(__net_register(encode(opts)))
+  end,
+  -- 便捷：body 按 JSON 解码；返回 status, data
+  jrequest = function(opts)
+    local res = net.request(opts)
+    local ok, data = pcall(json.decode, res.body or "")
+    if not ok then
+      error({ error = "net.bad_json", detail = string.sub(res.body or "", 1, 120) }, 0)
+    end
+    return res.status, data
+  end,
+}
+
 -- ---------- 实体句柄（活读：动态字段每次访问穿透到最新缓存） ----------
 
 local function snap_of(id)

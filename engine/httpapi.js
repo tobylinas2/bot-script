@@ -160,7 +160,9 @@ export function startHttpApi(engine, { log = console.log } = {}) {
               scripts: engine.cfg.scripts ?? [],
               params: engine.cfg.params ?? {},
               persist: engine.cfg.persist ?? null,
+              net: engine.cfg.net ?? [],
             },
+            net: { manifest: engine.cfg.net ?? [], granted: engine.policy?.net ?? [] },
           });
         }
 
