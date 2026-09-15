@@ -14,5 +14,5 @@ params:
   api_key:          { type: string, default: '', desc: 平台 API 密钥（bsk_…，事件上报/指令回执通道；空 = 桥禁用） }
   api_base:         { type: string, default: 'http://127.0.0.1:18100', desc: 控制面地址 }
   instance_id:      { type: string, default: '', desc: 实例 ID（平台部署时自动注入，无需手填） }
-  transfer_pattern: { type: string, default: '(\\S+) 向 MixTobyInjSave 转账 ([\\d.]+)', desc: 'TSLC 转账识别（JS 正则，平台侧匹配经济原文行；捕获 1=玩家名 2=金额）' }
+  transfer_pattern: { type: string, default: '你收到了来自 (\S+) 的 ([\d.]+) C', desc: 'TSLC 收款识别（JS 正则；实测收款副本格式 [TSLLLLL] 你收到了来自 玩家 的 金额 C；捕获 1=玩家名 2=金额）' }
 persist: ./data/afk.sqlite
