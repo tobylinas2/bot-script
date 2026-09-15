@@ -120,6 +120,15 @@ export function startHttpApi(engine, { log = console.log } = {}) {
           }
         }
 
+        case '/event': {
+          // 平台事件入站（agent 经 §17 代理转发）：入队 → Lua events.next 消费
+          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+          const body = JSON.parse((await readBody(req)) || '{}');
+          if (!body.type) return json(res, 400, { error: 'type required' });
+          engine.pushEvent(String(body.type), body.data);
+          return json(res, 200, { ok: true, queued: engine.eventQueue.length });
+        }
+
         case '/tasks':
           return json(res, 200, { tasks: engine.taskListFull() });
 

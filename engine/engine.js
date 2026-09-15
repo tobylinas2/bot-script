@@ -369,6 +369,8 @@ export class BotEngine {
     this.budgetCount = 0;
     this.chatTokens = [];           // say 限速令牌桶时间戳
     this.actionLog = [];
+    this.eventQueue = [];           // 平台事件（HTTP /event 注入 → Lua events.next 消费）
+    this.eventWaiters = [];         // events.next 等待者（FIFO）
     this.stopped = false;
     this.handledSpawn = false;
     this._mounted = new Set();
@@ -656,6 +658,19 @@ ${e.stack ?? ''}`);
     this.flushPending();
   }
 
+  /** 平台事件入站（控制通道 /event）：有等待者直付，否则入队（容量 64，溢出丢最旧） */
+  pushEvent(type, data) {
+    const ev = { type: String(type), data: (data && typeof data === 'object') ? data : {}, ts: nowMs() };
+    const w = this.eventWaiters.shift();
+    if (w) {
+      clearTimeout(w.timer);
+      this.settle(w.token, JSON.stringify(ev), '');
+      return;
+    }
+    if (this.eventQueue.length >= 64) this.eventQueue.shift();
+    this.eventQueue.push(ev);
+  }
+
   mountVfs(file, content) {
     return new Promise((res, rej) => this.factory.mountFile(file, content).then(res, rej));
   }
@@ -870,6 +885,28 @@ ${e.stack ?? ''}`);
       } catch (e) {
         this.settle(token, '', JSON.stringify({ error: 'net.failed', detail: String(e?.message ?? e) }));
       }
+      return token;
+    });
+
+    // ---- 平台事件（§17 /event 注入 → Lua events.next）：入队或直付首个等待者 ----
+    G('__evt_next', (j) => {
+      const { timeout } = JSON.parse(j || '{}');
+      const token = this.newToken();
+      this.tokens.get(token).kind = 'event';
+      const ev = this.eventQueue.shift();
+      if (ev) {
+        this.settle(token, JSON.stringify(ev), '');
+        return token;
+      }
+      const w = { token };
+      w.timer = setTimeout(() => {
+        const i = this.eventWaiters.indexOf(w);
+        if (i >= 0) this.eventWaiters.splice(i, 1);
+        const t = this.tokens.get(token);
+        if (t && !t.settled) this.settle(token, '', '');   // 超时交付 ""（events.next 返回 nil）
+      }, Math.max(0, Number(timeout) || 30000));
+      this.activeTimers.push(w.timer);
+      this.eventWaiters.push(w);
       return token;
     });
 

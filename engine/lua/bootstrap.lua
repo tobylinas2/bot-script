@@ -752,6 +752,15 @@ net = {
   end,
 }
 
+-- ---------- events（平台事件入站；控制通道 /event → events.next） ----------
+-- 控制面经 agent 代理 POST /event {type, data} 注入；脚本事件循环 events.next 取走。
+-- 返回 {type, data, ts}；超时返回 nil（脚本可循环长等）。
+events = {}
+function events.next(timeout)
+  local tok = __evt_next(encode({ timeout = timeout or 30000 }))
+  return await(tok)
+end
+
 -- ---------- 实体句柄（活读：动态字段每次访问穿透到最新缓存） ----------
 
 local function snap_of(id)

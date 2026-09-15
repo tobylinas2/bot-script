@@ -611,6 +611,38 @@ test('httpapi：鉴权/状态/params/cmd/tasks/logs/persist/caps 全链', async 
 });
 
 // ============================================================
+// 9. 平台事件入站（/event → events.next）
+// ============================================================
+
+test('events：pushEvent 直付等待者、FIFO 排队、空队超时 nil', async () => {
+  script('t11.lua', `
+    __R_order = nil
+    task("evt_loop", { single = true }, function()
+      local order = {}
+      local ev = events.next(2000)   -- 等待中被直付
+      order[#order + 1] = ev and ev.type or "nil"
+      time.sleep(50)                 -- 让后续事件入队（无等待者）
+      for i = 1, 4 do
+        local e = events.next(120)
+        order[#order + 1] = e and e.type or "timeout"
+      end
+      __R_order = table.concat(order, ",")
+    end)
+    on_start(function() task.spawn("evt_loop") end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['t11.lua'] });
+  assert.ok(await waitFor(() => engine.eventWaiters.length === 1), '事件循环应挂起等待');
+  engine.pushEvent('deploy', { k: 42 });
+  engine.pushEvent('say', {});
+  engine.pushEvent('cmd', {});
+  engine.pushEvent('third', {});
+  assert.ok(await waitFor(() => g(engine, '__R_order') === 'deploy,say,cmd,third,timeout', 5000),
+    `消费序应为 直付+FIFO+超时（实际 ${g(engine, '__R_order')}）`);
+  assert.strictEqual(engine.eventQueue.length, 0);
+  await engine.stop();
+});
+
+// ============================================================
 
 const started = Date.now();
 let failed = 0;
