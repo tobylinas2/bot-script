@@ -762,6 +762,34 @@ test('pause 冻结 timer：on_timer/after/time.sleep 暂停期不触发，resume
   await engine.stop();
 });
 
+test('after 触发后不重放：自然触发完的 after/sleep 经任意次 pause→resume 不得重执行，timerSpecs 台账有界', async () => {
+  script('t14.lua', `
+    __S_after_n = 0
+    __S_sleep_n = 0
+    on_start(function()
+      after(80, function() __S_after_n = __S_after_n + 1 end)
+      task.spawn(function()
+        time.sleep(100)
+        __S_sleep_n = __S_sleep_n + 1
+      end)
+    end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['t14.lua'] });
+  assert.ok(await waitFor(() => g(engine, '__S_after_n') === 1 && g(engine, '__S_sleep_n') === 1, 3000),
+    '前置：after/sleep 自然触发各一次');
+  assert.strictEqual(engine.timerSpecs.size, 0, '已完成的一次性 spec 应从台账移除');
+  for (let i = 0; i < 3; i++) {
+    engine.pause('command');
+    await new Promise((r) => setTimeout(r, 120));
+    engine.resume();
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  assert.strictEqual(g(engine, '__S_after_n'), 1, '已触发过的 after 经 pause→resume 不得重放');
+  assert.strictEqual(g(engine, '__S_sleep_n'), 1, '已完成的 sleep 不得重放');
+  assert.strictEqual(engine.timerSpecs.size, 0, 'resume 不得重挂 stale spec');
+  await engine.stop();
+});
+
 // ============================================================
 
 const started = Date.now();

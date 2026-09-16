@@ -403,6 +403,8 @@ export class BotEngine {
     this.driver.on('death', () => {
       this.event('self.died', {});
       // 自动重生（CAPABILITIES §8：死亡 -> 自动重生，任务决定去留）
+      // 例外：会话生命周期 timer，不进 timerSpecs 冻结域——死亡重生是客户端会话态恢复
+      // 而非任务执行，pause（任务挂起）期间也应照常回到出生点（TOB-475 审查问题 3 登记）
       setTimeout(() => { if (!this.stopped) this.driver.respawn?.().catch?.(() => {}); }, 1200);
     });
     this.driver.on('respawn', () => this.event('self.respawned', {}));
@@ -479,6 +481,8 @@ export class BotEngine {
       if (!this.handledSpawn) {
         this.handledSpawn = true;
         // session.ready = playing + 首圈 chunk（尽力而为：spawn 后短暂延迟）
+        // 例外：会话生命周期 timer，不进 timerSpecs 冻结域——ready 是会话握手事件，
+        // 只在首连发生一次，冻结它只会延迟而非取消，且 pause 场景（断线在 playing 前不可达）不会命中
         setTimeout(() => this.fireReady(), 1500);
       } else if (this.paused && (this.pauseReason === 'disconnect' || this.pauseReason === 'kicked')) {
         this.log('info', `[${this.name}] 重连成功，自动 resume`);
@@ -618,19 +622,29 @@ export class BotEngine {
   }
   startSpec(spec) {
     spec.startedAt = nowMs();
-    spec.handle = spec.repeat
-      ? setInterval(spec.fn, spec.delay)
-      : setTimeout(spec.fn, spec.remain);
+    if (spec.repeat) {
+      spec.handle = setInterval(spec.fn, spec.delay);
+    } else {
+      // 一次性 spec 到点即从台账移除：已触发的 after/sleep 不得被 freeze/unfreeze 重放
+      spec.handle = setTimeout(() => {
+        spec.handle = null;
+        this.timerSpecs.delete(spec);
+        spec.fn();
+      }, spec.remain);
+    }
   }
   clearSpec(spec) {
     if (spec.repeat) clearInterval(spec.handle);
     else clearTimeout(spec.handle);
     spec.handle = null;
+    this.timerSpecs.delete(spec);   // 提前取消同样出账；冻结走 freezeTimers（保留台账待 resume 重挂）
   }
   freezeTimers() {
     const now = nowMs();
     for (const spec of this.timerSpecs) {
-      this.clearSpec(spec);
+      if (spec.repeat) clearInterval(spec.handle);
+      else clearTimeout(spec.handle);
+      spec.handle = null;
       spec.remain = spec.repeat ? spec.delay : Math.max(0, spec.delay - (now - spec.startedAt));
     }
   }
