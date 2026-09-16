@@ -21,7 +21,7 @@ function script(name, src) {
   writeFileSync(path.join(TEST_DIR, name), src);
 }
 
-async function makeEngine({ yaml = {}, scripts = [], driver, boundary } = {}) {
+async function makeEngine({ yaml = {}, scripts = [], driver, boundary, runtime } = {}) {
   const d = driver ?? new MockDriver();
   const engine = new BotEngine({
     name: 'test-bot',
@@ -33,6 +33,7 @@ async function makeEngine({ yaml = {}, scripts = [], driver, boundary } = {}) {
     // 观察模式（默认全拒）由用例显式传 boundary: null 验证
     boundary: boundary !== undefined ? boundary : (yaml.boundary ?? yaml.policy ?? {}),
     connect: yaml.connect ?? yaml.driver ?? {},
+    runtime,
   });
   await engine.start();
   return { engine, driver: d };
@@ -639,6 +640,125 @@ test('events：pushEvent 直付等待者、FIFO 排队、空队超时 nil', asyn
   assert.ok(await waitFor(() => g(engine, '__R_order') === 'deploy,say,cmd,third,timeout', 5000),
     `消费序应为 直付+FIFO+超时（实际 ${g(engine, '__R_order')}）`);
   assert.strictEqual(engine.eventQueue.length, 0);
+  await engine.stop();
+});
+
+// ============================================================
+// 10. 断线重连健壮化（TOB-475）
+// ============================================================
+
+test('断线缓存失效：entities/windows/world 旧会话数据清空，重连 playing 后自动 resume 不残留', async () => {
+  script('t12.lua', `
+    __R_ready2 = false
+    on_start(function() end)
+  `);
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: ['t12.lua'],
+    driver,
+    runtime: { reconnect: { base_ms: 60, max_ms: 200 } },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  // 旧会话数据面：实体 / 世界方块 / 容器窗口
+  driver.addPlayer('Ghost', { x: 1, y: 64, z: 1 });
+  driver.emit('block_update', { pos: { x: 3, y: 64, z: 3 }, name: 'minecraft:chest' });
+  driver.emit('window', { id: '42', type: 'chest', title: '旧箱', size: 27, slots: [{ index: 0, item: { id: 'minecraft:dirt', count: 1 } }] });
+  assert.ok(engine.entities.size > 0 && engine.world.size > 0 && engine.windows.size > 0, '前置：旧会话缓存已灌入');
+
+  driver.emit('session', { state: 'disconnected', reason: 'server closed' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(engine.paused, true, '断线应自动 pause');
+  assert.strictEqual(engine.pauseReason, 'disconnect');
+  assert.strictEqual(engine.entities.size, 0, 'entities 旧会话残留应清空');
+  assert.strictEqual(engine.windows.size, 0, 'windows 旧会话残留应清空');
+  assert.strictEqual(engine.currentWindowId, null, 'currentWindowId 应复位');
+  assert.strictEqual(engine.world.size, 0, 'world 旧会话方块观测应清空');
+  assert.strictEqual(engine.reconAttempts, 1, '断线应发起第 1 次退避计数');
+
+  // 服务器回来：驱动重连 → playing（全新会话数据；旧玩家已不在）
+  driver.removePlayer('Ghost');
+  driver.emit('session', { state: 'playing', info: { version: '1.21.8' } });
+  driver.addPlayer('Fresh', { x: 9, y: 64, z: 9 });
+  assert.strictEqual(engine.reconAttempts, 0, 'playing 后 attempts 应清零');
+  assert.strictEqual(engine.paused, false, '重连成功应自动 resume');
+  assert.ok(await waitFor(() => engine.entities.size === 1 && [...engine.entities.values()].some((e) => e.name === 'Fresh'), 3000),
+    '新会话实体面只含新会话数据');
+  await engine.stop();
+});
+
+test('重连退避：jitter ±20% 散布、attempts 递增、/state 暴露 reconnecting/attempts/nextRetryIn', async () => {
+  // 纯函数分布：base*attempts 封顶 max，±20% 随机散布
+  const d1 = Array.from({ length: 200 }, () => BotEngine.backoffDelay(1, 30000, 120000, Math.random));
+  assert.ok(d1.every((d) => d >= 24000 && d <= 36000), `attempts=1 应在 24s~36s（见 ${Math.min(...d1)}~${Math.max(...d1)}）`);
+  assert.ok(new Set(d1).size > 20, '同 attempts 应呈散布而非固定值');
+  const d5 = Array.from({ length: 200 }, () => BotEngine.backoffDelay(5, 30000, 120000, Math.random));
+  assert.ok(d5.every((d) => d >= 96000 && d <= 144000), 'attempts=5 应封顶 120s ±20%');
+
+  // 实例路径：attempts 递增 + /state 可观测
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: [],
+    driver,
+    runtime: { reconnect: { base_ms: 80, max_ms: 300 } },
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  driver.emit('session', { state: 'disconnected', reason: 'x' });
+  assert.strictEqual(engine.reconAttempts, 1);
+  assert.ok(engine.reconnectDueAt != null, '应记录下次重连时刻');
+  // 断线仍在：再触发一次退避计数（模拟连续断线）
+  clearTimeout(engine.reconnectTimer);
+  engine.reconnectTimer = null;
+  engine.scheduleReconnect();
+  assert.strictEqual(engine.reconAttempts, 2, '连续断线 attempts 应递增');
+
+  // /state 暴露重连可观测字段
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const { startHttpApi } = await import('../httpapi.js');
+  const { port, token } = await startHttpApi(engine, { log: () => {} });
+  const hdr = { Authorization: `Bearer ${token}` };
+  const state = await (await fetch(`http://127.0.0.1:${port}/state`, { headers: hdr })).json();
+  assert.strictEqual(state.reconnecting, true, '/state.reconnecting 应为 true');
+  assert.strictEqual(state.reconnect_attempts, 2);
+  assert.ok(Number.isFinite(state.next_retry_in) && state.next_retry_in >= 0, 'next_retry_in 应为非负毫秒');
+
+  // playing 后：attempts 清零、reconnecting false、next_retry_in null
+  driver.emit('session', { state: 'playing', info: {} });
+  assert.strictEqual(engine.reconAttempts, 0);
+  const state2 = await (await fetch(`http://127.0.0.1:${port}/state`, { headers: hdr })).json();
+  assert.strictEqual(state2.reconnecting, false);
+  assert.strictEqual(state2.next_retry_in, null);
+  await engine.stop();
+});
+
+test('pause 冻结 timer：on_timer/after/time.sleep 暂停期不触发，resume 恢复且剩余时相保留', async () => {
+  script('t13.lua', `
+    __R_ticks = 0
+    __R_after_ran = false
+    __R_sleep_ran = false
+    on_timer(50, function() __R_ticks = __R_ticks + 1 end)
+    on_start(function()
+      after(200, function() __R_after_ran = true end)
+      task.spawn(function()
+        time.sleep(300)
+        __R_sleep_ran = true
+      end)
+    end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['t13.lua'] });
+  assert.ok(await waitFor(() => g(engine, '__R_ticks') >= 2, 3000), 'interval 应在 pause 前正常触发');
+  const before = g(engine, '__R_ticks');
+  const t0 = Date.now();
+  engine.pause('command');
+  await new Promise((r) => setTimeout(r, 400));   // 期间 interval 会到点 ~8 次、after(200) 到点、sleep(300) 到点
+  assert.strictEqual(g(engine, '__R_ticks'), before, 'pause 期间 on_timer 不得触发');
+  assert.strictEqual(g(engine, '__R_after_ran'), false, 'pause 期间 after 不得触发');
+  assert.strictEqual(g(engine, '__R_sleep_ran'), false, 'pause 期间 time.sleep 不得完成');
+  engine.resume();
+  const resumeAt = Date.now();
+  assert.ok(await waitFor(() => g(engine, '__R_after_ran') === true, 1000), 'resume 后 after 应触发');
+  assert.ok(Date.now() - resumeAt < 200, 'after 冻结的剩余时相应保留（resume 即触发而非重走全程）');
+  assert.ok(await waitFor(() => g(engine, '__R_ticks') > before, 1000), 'resume 后 on_timer 应恢复');
+  assert.ok(await waitFor(() => g(engine, '__R_sleep_ran') === true, 1000), 'resume 后 sleep 于剩余时相到期完成');
   await engine.stop();
 });
 

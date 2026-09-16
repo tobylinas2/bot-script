@@ -362,9 +362,11 @@ export class BotEngine {
     this.paramPersist = new Map();  // 显式改过的值（重启保留）
     this.commands = [];             // {pattern, tokens, perm, index}
     this.pendingTimers = [];
-    this.activeTimers = [];
+    this.timerSpecs = new Set();    // 引擎侧 timer 登记（pause 冻结 / stop 清理的统一台账）
     this.rexList = new Map();
     this.joinRecs = new Map();      // token -> join state
+    this.reconAttempts = 0;         // 断线重连退避计数（playing 清零）
+    this.reconnectDueAt = null;     // 下次重连尝试时刻（/state.next_retry_in 可观测）
 
     this.budgetCount = 0;
     this.chatTokens = [];           // say 限速令牌桶时间戳
@@ -460,7 +462,9 @@ export class BotEngine {
   async stop() {
     this.stopped = true;
     clearTimeout(this.reconnectTimer);
-    for (const t of this.activeTimers) clearTimeout(t);
+    this.reconnectDueAt = null;
+    for (const spec of this.timerSpecs) this.clearSpec(spec);
+    this.timerSpecs.clear();
     try { await this.driver.stop?.(); } catch { /* ignore */ }
     this.persist?.close();
   }
@@ -471,6 +475,7 @@ export class BotEngine {
     if (p.info) this.sessionInfo = p.info;
     if (p.state === 'playing' && prev !== 'playing') {
       this.reconAttempts = 0;   // 重连成功：退避计数清零
+      this.reconnectDueAt = null;
       if (!this.handledSpawn) {
         this.handledSpawn = true;
         // session.ready = playing + 首圈 chunk（尽力而为：spawn 后短暂延迟）
@@ -482,18 +487,38 @@ export class BotEngine {
     }
     if ((p.state === 'kicked' || p.state === 'disconnected') && !this.stopped) {
       this.log('warn', `[${this.name}] 会话 ${p.state}: ${p.reason ?? ''} -> 自动 pause`);
+      // 会话已终：旧会话缓存（entities/windows/world）全部失效，重连后由新会话重建
+      this.invalidateSessionCache();
       this.pause(p.state === 'kicked' ? 'kicked' : 'disconnect');
-      this.scheduleReconnect();   // 基础能力：自动重连（退避 30s→120s 封顶）
+      this.scheduleReconnect();   // 基础能力：自动重连（退避 30s→120s 封顶，±20% jitter）
     }
+  }
+
+  invalidateSessionCache() {
+    this.entities.clear();
+    this.windows.clear();
+    this.currentWindowId = null;
+    this.world.clear();
+  }
+
+  /** 重连退避：base*attempts 封顶 max，±20% jitter（同服多 bot 错峰重试）；静态纯函数便于测试 */
+  static backoffDelay(attempts, baseMs = 30000, maxMs = 120000, rnd = Math.random) {
+    const base = Math.min(maxMs, baseMs * attempts);
+    return Math.round(base * (1 + (2 * rnd() - 1) * 0.2));
   }
 
   scheduleReconnect() {
     if (this.stopped || this.reconnectTimer || this.runtimeCfg.dry_run) return;
+    const rc = this.runtimeCfg.reconnect ?? {};
+    const baseMs = Number(rc.base_ms) || 30000;
+    const maxMs = Number(rc.max_ms) || 120000;
     this.reconAttempts = (this.reconAttempts ?? 0) + 1;
-    const delay = Math.min(120000, 30000 * this.reconAttempts);
+    const delay = BotEngine.backoffDelay(this.reconAttempts, baseMs, maxMs);
+    this.reconnectDueAt = nowMs() + delay;
     this.log('info', `[${this.name}] ${Math.round(delay / 1000)}s 后尝试重连（第 ${this.reconAttempts} 次）`);
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
+      this.reconnectDueAt = null;
       if (this.stopped || this.sessionState === 'playing') return;
       try {
         if (this.driver.reconnect) await this.driver.reconnect(this.connectCfg);
@@ -505,7 +530,6 @@ export class BotEngine {
         this.scheduleReconnect();
       }
     }, delay);
-    this.activeTimers.push(this.reconnectTimer);
   }
 
   fireReady() {
@@ -583,6 +607,40 @@ export class BotEngine {
 
   // ================= 暂停门控 =================
 
+  // 引擎侧 timer 统一经此登记：pause 冻结（保留剩余时相）、resume 重建、stop 清理。
+  // 注意：重连退避 timer 不走此通道（pause 期间必须继续跑）。
+  armTimer(fn, delay, { repeat = false } = {}) {
+    const d = Math.max(0, Number(delay) || 0);
+    const spec = { fn, delay: d, repeat, handle: null, startedAt: nowMs(), remain: d };
+    this.timerSpecs.add(spec);
+    this.startSpec(spec);
+    return spec;
+  }
+  startSpec(spec) {
+    spec.startedAt = nowMs();
+    spec.handle = spec.repeat
+      ? setInterval(spec.fn, spec.delay)
+      : setTimeout(spec.fn, spec.remain);
+  }
+  clearSpec(spec) {
+    if (spec.repeat) clearInterval(spec.handle);
+    else clearTimeout(spec.handle);
+    spec.handle = null;
+  }
+  freezeTimers() {
+    const now = nowMs();
+    for (const spec of this.timerSpecs) {
+      this.clearSpec(spec);
+      spec.remain = spec.repeat ? spec.delay : Math.max(0, spec.delay - (now - spec.startedAt));
+    }
+  }
+  unfreezeTimers() {
+    for (const spec of this.timerSpecs) {
+      if (spec.handle) continue;
+      this.startSpec(spec);
+    }
+  }
+
   pause(reason) {
     if (this.paused) return;
     this.paused = true;
@@ -590,6 +648,8 @@ export class BotEngine {
     // 停走 + 取消寻路
     try { Promise.resolve(this.driver.path_cancel?.()).catch?.(() => {}); } catch { /* ignore */ }
     try { Promise.resolve(this.driver.move_input({ fwd: 0, strafe: 0, jump: 0, sneak: 0, sprint: 0 })).catch?.(() => {}); } catch { /* ignore */ }
+    // 冻结 timer 队列（DESIGN §4：pause = 停 timer；断线期间不再经 on_timer spawn 新任务）
+    this.freezeTimers();
     // 进行中的动作以 runtime.paused 失败；交付冻结于门，resume 时在冻结点重抛
     for (const [tok, rec] of this.tokens) {
       if (rec.kind === 'action' && rec.taskId && !rec.settled) {
@@ -606,6 +666,8 @@ export class BotEngine {
     const wasReason = this.pauseReason;
     this.pauseReason = null;
     this.log('info', `[${this.name}] RESUME（原暂停原因 ${wasReason}）`);
+    // 解冻 timer：到点的立即触发，未到点的按剩余时相续跑
+    this.unfreezeTimers();
     this.event('lifecycle', { kind: 'on_resume', payload: { reason: wasReason } });
     // 解冻：冻结点重抛（含 runtime.paused 的动作错误走正常重试路径）
     const q = this.frozen;
@@ -663,7 +725,7 @@ ${e.stack ?? ''}`);
     const ev = { type: String(type), data: (data && typeof data === 'object') ? data : {}, ts: nowMs() };
     const w = this.eventWaiters.shift();
     if (w) {
-      clearTimeout(w.timer);
+      this.clearSpec(w.timer);
       this.settle(w.token, JSON.stringify(ev), '');
       return;
     }
@@ -778,8 +840,7 @@ ${e.stack ?? ''}`);
       const token = this.newToken();
       const rec = this.tokens.get(token);
       rec.kind = 'sleep';
-      const to = setTimeout(() => this.settle(token, '', ''), Math.max(0, Number(ms) || 0));
-      this.activeTimers.push(to);
+      this.armTimer(() => this.settle(token, '', ''), Math.max(0, Number(ms) || 0));
       return token;
     });
 
@@ -788,7 +849,7 @@ ${e.stack ?? ''}`);
       const token = this.newToken();
       const rec = this.tokens.get(token);
       rec.kind = 'waiter';
-      setTimeout(() => {
+      this.armTimer(() => {
         // 超时：交付 ""（await_chat 返回 nil）
         const t = this.tokens.get(token);
         if (t && !t.settled) this.settle(token, '', '');
@@ -856,8 +917,7 @@ ${e.stack ?? ''}`);
         const method = String(req.method ?? 'GET').toUpperCase();
         if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method)) { deny('net.denied', `方法不允许: ${method}`); return token; }
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 10000);
-        this.activeTimers.push(to);
+        const abortSpec = this.armTimer(() => ctrl.abort(), 10000);
         const headers = (req.headers && typeof req.headers === 'object' && !Array.isArray(req.headers))
           ? Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [String(k), String(v)])) : undefined;
         fetch(u, {
@@ -867,7 +927,7 @@ ${e.stack ?? ''}`);
           signal: ctrl.signal,
           redirect: 'manual',   // 跳转不跟：避免借 3xx 绕过白名单
         }).then(async (r) => {
-          clearTimeout(to);
+          this.clearSpec(abortSpec);
           const buf = Buffer.from(await r.arrayBuffer());
           const hs = {};
           r.headers.forEach((v, k) => { hs[k] = v; });
@@ -879,7 +939,7 @@ ${e.stack ?? ''}`);
             truncated,
           }), '');
         }).catch((e) => {
-          clearTimeout(to);
+          this.clearSpec(abortSpec);
           this.settle(token, '', JSON.stringify({ error: 'net.failed', detail: String(e?.cause?.message ?? e.message ?? e) }));
         });
       } catch (e) {
@@ -899,13 +959,12 @@ ${e.stack ?? ''}`);
         return token;
       }
       const w = { token };
-      w.timer = setTimeout(() => {
+      w.timer = this.armTimer(() => {
         const i = this.eventWaiters.indexOf(w);
         if (i >= 0) this.eventWaiters.splice(i, 1);
         const t = this.tokens.get(token);
         if (t && !t.settled) this.settle(token, '', '');   // 超时交付 ""（events.next 返回 nil）
       }, Math.max(0, Number(timeout) || 30000));
-      this.activeTimers.push(w.timer);
       this.eventWaiters.push(w);
       return token;
     });
@@ -919,11 +978,9 @@ ${e.stack ?? ''}`);
 
   activateTimer(t) {
     if (t.once) {
-      const to = setTimeout(() => this.event('after', { id: t.id }), t.delay);
-      this.activeTimers.push(to);
+      this.armTimer(() => this.event('after', { id: t.id }), t.delay);
     } else {
-      const iv = setInterval(() => this.event('timer', { id: t.id }), t.interval);
-      this.activeTimers.push(iv);
+      this.armTimer(() => this.event('timer', { id: t.id }), t.interval, { repeat: true });
     }
   }
 
