@@ -69,6 +69,8 @@ export function startHttpApi(engine, { log = console.log } = {}) {
             next_retry_in: engine.reconnectDueAt != null
               ? Math.max(0, engine.reconnectDueAt - Date.now())
               : null,
+            // 凭据轮换可观测（TOB-489）：最近一次 POST /session 生效时刻（平台推送确认用）
+            credential_updated_at: engine.credentialUpdatedAt ?? null,
             self: s ? {
               ...s,
               held: s.held ?? null,
@@ -134,6 +136,24 @@ export function startHttpApi(engine, { log = console.log } = {}) {
           if (!body.type) return json(res, 400, { error: 'type required' });
           engine.pushEvent(String(body.type), body.data);
           return json(res, 200, { ok: true, queued: engine.eventQueue.length });
+        }
+
+        case '/session': {
+          // 凭据更新（TOB-489，契约冻结见 issue）：写入 connectCfg.account.accessToken，
+          // 在线连接零动作，断线/重连环路下一次重连即用新 token。token 值不进日志/响应。
+          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+          const body = JSON.parse((await readBody(req)) || '{}');
+          try {
+            return json(res, 200, engine.updateSessionCredential(body));
+          } catch (e) {
+            if (e?.kind === 'session.bad_request') {
+              return json(res, 400, { error: e.kind, detail: e.message });
+            }
+            if (e?.kind === 'session.account_mode' || e?.kind === 'session.identity_mismatch') {
+              return json(res, 409, { error: e.kind, detail: e.message });
+            }
+            throw e;
+          }
         }
 
         case '/tasks':

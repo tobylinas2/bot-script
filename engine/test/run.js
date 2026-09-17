@@ -791,6 +791,136 @@ test('after 触发后不重放：自然触发完的 after/sleep 经任意次 pau
 });
 
 // ============================================================
+// 11. 会话凭据更新（TOB-489 POST /session）
+// ============================================================
+
+const SESSION_ACCOUNT = { auth: 'session', username: 'BotOne', uuid: '00000000-0000-0000-0000-0000000000f1', accessToken: 'old-token-DO-NOT-LEAK' };
+
+test('POST /session：鉴权 401、方法 405、参数 400、非 session 账号 409、身份不匹配 409', async () => {
+  // 非 session 账号（offline）：account_mode 409
+  const driver = new MockDriver();
+  const { engine: offlineEngine } = await makeEngine({
+    scripts: [],
+    driver,
+    yaml: { connect: { host: '127.0.0.1', port: 25565, account: { username: 'OfflineBot' } } },
+  });
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const { startHttpApi } = await import('../httpapi.js');
+  const { port, token } = await startHttpApi(offlineEngine, { log: () => {} });
+  const base = `http://127.0.0.1:${port}`;
+  const hdr = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  assert.strictEqual((await fetch(base + '/session', { method: 'POST', body: '{"access_token":"x"}' })).status, 401, '无 token 401');
+  assert.strictEqual(
+    (await fetch(base + '/session', { method: 'POST', headers: { Authorization: 'Bearer nope' }, body: '{"access_token":"x"}' })).status,
+    401, '错 token 401',
+  );
+  assert.strictEqual((await fetch(base + '/session', { headers: hdr })).status, 405, 'GET 应 405');
+  const r409res = await fetch(base + '/session', { method: 'POST', headers: hdr, body: '{"access_token":"x"}' });
+  assert.strictEqual(r409res.status, 409, 'offline 账号应 409');
+  assert.strictEqual((await r409res.json()).error, 'session.account_mode');
+  await offlineEngine.stop();
+
+  // session 账号：参数与身份校验
+  const driver2 = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: [],
+    driver: driver2,
+    yaml: { connect: { host: '127.0.0.1', port: 25565, account: { ...SESSION_ACCOUNT } } },
+  });
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const api2 = await startHttpApi(engine, { log: () => {} });
+  const base2 = `http://127.0.0.1:${api2.port}`;
+  const hdr2 = { Authorization: `Bearer ${api2.token}`, 'Content-Type': 'application/json' };
+
+  assert.strictEqual((await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: '{}' })).status, 400, '缺 access_token 应 400');
+  assert.strictEqual((await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: '{"access_token":""}' })).status, 400, '空串应 400');
+  assert.strictEqual((await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: '{"access_token":42}' })).status, 400, '非字符串应 400');
+  const rMis = await (await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: '{"access_token":"x","username":"Wrong"}' })).json();
+  assert.strictEqual((await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: '{"access_token":"x","username":"Wrong"}' })).status, 409, 'username 不匹配应 409');
+  assert.strictEqual(rMis.error, 'session.identity_mismatch');
+  assert.strictEqual(
+    (await fetch(base2 + '/session', { method: 'POST', headers: hdr2, body: `{"access_token":"x","uuid":"ffffffff-0000-0000-0000-000000000000"}` })).status,
+    409, 'uuid 不匹配应 409',
+  );
+  assert.strictEqual(engine.connectCfg.account.accessToken, SESSION_ACCOUNT.accessToken, '被拒请求不得改写凭据');
+  await engine.stop();
+});
+
+test('POST /session：写入 connectCfg、幂等 200、生效语义 playing=next_connect / 断线=next_reconnect、不重置退避', async () => {
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: [],
+    driver,
+    yaml: { connect: { host: '127.0.0.1', port: 25565, account: { ...SESSION_ACCOUNT } } },
+    runtime: { reconnect: { base_ms: 100, max_ms: 200 } },
+  });
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const { startHttpApi } = await import('../httpapi.js');
+  const { port, token } = await startHttpApi(engine, { log: () => {} });
+  const base = `http://127.0.0.1:${port}`;
+  const hdr = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const post = (body) => fetch(base + '/session', { method: 'POST', headers: hdr, body: JSON.stringify(body) });
+
+  assert.strictEqual(engine.sessionState, 'playing', '前置：MockDriver 连接后 playing');
+  assert.strictEqual((await (await post({ access_token: 'new-token-a' })).json()).applied, true);
+  assert.strictEqual(engine.connectCfg.account.accessToken, 'new-token-a', '凭据应写入 connectCfg.account.accessToken');
+
+  // 幂等：同值重复 POST 仍 200
+  assert.strictEqual((await post({ access_token: 'new-token-a' })).status, 200, '同值重复 POST 应 200');
+
+  // playing 态：在线连接零动作 + effective=next_connect
+  const rPlay = await (await post({ access_token: 'new-token-b' })).json();
+  assert.strictEqual(rPlay.effective, 'next_connect', 'playing 态应报 next_connect');
+  assert.strictEqual(engine.sessionState, 'playing', '更新凭据不得打断在线连接');
+
+  // /state：credential_updated_at 更新且不含 token 明文
+  const state = await (await fetch(base + '/state', { headers: hdr })).json();
+  assert.ok(Number.isFinite(state.credential_updated_at) && state.credential_updated_at > 0, 'credential_updated_at 应为时间戳');
+  assert.ok(state.credential_updated_at <= Date.now());
+  assert.ok(!JSON.stringify(state).includes('new-token'), '/state 不得泄露 token 明文');
+
+  // 断线退避中：effective=next_reconnect，且不重置退避计数与在途计划
+  driver.emit('session', { state: 'disconnected', reason: 'x' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(engine.reconAttempts, 1);
+  const dueBefore = engine.reconnectDueAt;
+  const rDisc = await (await post({ access_token: 'new-token-c' })).json();
+  assert.strictEqual(rDisc.effective, 'next_reconnect', '断线态应报 next_reconnect');
+  assert.strictEqual(engine.reconAttempts, 1, 'POST /session 不得重置退避计数');
+  assert.strictEqual(engine.reconnectDueAt, dueBefore, 'POST /session 不得打断在途重连计划');
+  assert.strictEqual(engine.connectCfg.account.accessToken, 'new-token-c');
+
+  // 下一次重连即用新 token：记录驱动收到的 cfg
+  const seen = [];
+  const origConnect = driver.connect.bind(driver);
+  driver.connect = async (cfg) => { seen.push(cfg?.account?.accessToken); return origConnect(cfg); };
+  assert.ok(await waitFor(() => seen.length >= 1, 3000), '退避到期应发起重连');
+  assert.strictEqual(seen[0], 'new-token-c', '重连必须使用新 accessToken 而非旧值');
+  await engine.stop();
+});
+
+test('POST /session：日志与 /state 全程无 token 明文', async () => {
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: [],
+    driver,
+    yaml: { connect: { host: '127.0.0.1', port: 25565, account: { ...SESSION_ACCOUNT } } },
+  });
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const { startHttpApi } = await import('../httpapi.js');
+  const { port, token } = await startHttpApi(engine, { log: () => {} });
+  const hdr = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const SECRET = 'super-secret-token-xyz';
+  await fetch(`http://127.0.0.1:${port}/session`, { method: 'POST', headers: hdr, body: JSON.stringify({ access_token: SECRET }) });
+  const logs = (await (await fetch(`http://127.0.0.1:${port}/logs`, { headers: hdr })).json());
+  const all = JSON.stringify(logs) + JSON.stringify(await (await fetch(`http://127.0.0.1:${port}/state`, { headers: hdr })).json());
+  assert.ok(!all.includes(SECRET), '日志与 /state 不得出现 token 明文');
+  assert.ok(!all.includes(SESSION_ACCOUNT.accessToken), '旧 token 明文同样不得出现');
+  await engine.stop();
+});
+
+// ============================================================
 
 const started = Date.now();
 let failed = 0;
