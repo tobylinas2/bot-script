@@ -707,7 +707,8 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/state` | GET | 快照：session、pos、health/food、当前任务列表与状态、窗口、caps |
+| `/state` | GET | 快照：session、pos、health/food、当前任务列表与状态、窗口、caps；含断线重连可观测（reconnecting/attempts/next_retry_in，TOB-475）与 `credential_updated_at`（最近一次 POST /session 生效时刻，无则 null） |
+| `/session` | POST | **mineflayer 宿主**：会话凭据更新（TOB-489，MC 凭据轮换引擎侧）。`{"access_token":"<新 token>","username"?:"…","uuid"?:"…"}` → `200 {"applied":true,"effective":"next_connect"\|"next_reconnect"}`。写入 `connectCfg.account.accessToken`：在线连接零动作（MC 协议无会话中重认证，accessToken 仅 join 期消费）；断线/重连环路中下一次重连即用新 token（不重置退避、不打断在途计划）。可选拖带 username/uuid 对账，与当前 account 不匹配 409；账号非 `auth:'session'` 模式（offline/密码式）409；access_token 缺失/空 400；同值重复 POST 幂等 200。token 值不进任何日志或 /state。fabric mod 宿主不在托管链路、暂不实现 |
 | `/params` | GET / POST | 读 / 改 params（schema 校验 + 持久化，等价控制总线写） |
 | `/cmd` | POST | 执行控制命令 `{"cmd":"balance Steve"}`（与游戏内/CLI 同总线同鉴权） |
 | `/eval` | POST | 一次性 Lua：`{"name":"relocate","code":"nav.walk{...}"}` 作为具名任务运行；编译错误 400，返回值/失败走 `/logs`，任务可在 `/tasks` 取消 |

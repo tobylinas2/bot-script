@@ -367,6 +367,7 @@ export class BotEngine {
     this.joinRecs = new Map();      // token -> join state
     this.reconAttempts = 0;         // 断线重连退避计数（playing 清零）
     this.reconnectDueAt = null;     // 下次重连尝试时刻（/state.next_retry_in 可观测）
+    this.credentialUpdatedAt = null; // 最近一次 POST /session 生效时刻（/state 可观测，TOB-489）
 
     this.budgetCount = 0;
     this.chatTokens = [];           // say 限速令牌桶时间戳
@@ -534,6 +535,35 @@ export class BotEngine {
         this.scheduleReconnect();
       }
     }, delay);
+  }
+
+  /** 会话凭据更新（TOB-489 §17 POST /session，mineflayer 宿主）：
+   *  写入 connectCfg.account.accessToken —— 在线连接零动作（MC 协议无会话中重认证，
+   *  accessToken 仅 join 期消费）；断线/重连环路中下一次重连即用新 token
+   *  （不重置退避、不打断在途重连计划）。错误以 kind 分型：session.bad_request（400）、
+   *  session.account_mode / session.identity_mismatch（409）。token 值不得进任何日志。 */
+  updateSessionCredential({ access_token: token, username, uuid } = {}) {
+    const acct = this.connectCfg.account;
+    if (!acct || acct.auth !== 'session') {
+      const e = new Error('account is not auth=session mode');
+      e.kind = 'session.account_mode';
+      throw e;
+    }
+    if (typeof token !== 'string' || !token.trim()) {
+      const e = new Error('access_token required (non-empty string)');
+      e.kind = 'session.bad_request';
+      throw e;
+    }
+    if ((username != null && username !== acct.username) || (uuid != null && uuid !== acct.uuid)) {
+      const e = new Error('credential identity mismatch');
+      e.kind = 'session.identity_mismatch';
+      throw e;
+    }
+    acct.accessToken = token;
+    this.credentialUpdatedAt = nowMs();
+    const effective = this.sessionState === 'playing' ? 'next_connect' : 'next_reconnect';
+    this.log('info', `[${this.name}] 会话凭据已更新（生效时机=${effective}，在线连接不受影响）`);
+    return { applied: true, effective };
   }
 
   fireReady() {
