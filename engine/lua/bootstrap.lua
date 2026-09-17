@@ -384,7 +384,10 @@ function __core_event_inner(kind, j)
     if spec then task.spawn_detached(spec.fn) end
   elseif kind == "after" then
     local fn = p and __DECL.afters[p.id]
-    if fn then task.spawn_detached(fn) end
+    if fn then
+      __DECL.afters[p.id] = nil   -- 一次性：触发即注销，防止重复事件重放回调
+      task.spawn_detached(fn)
+    end
   elseif kind == "chat" then
     __chat_pipeline(p)
   elseif kind == "lifecycle" then

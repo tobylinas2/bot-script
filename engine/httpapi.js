@@ -55,6 +55,7 @@ export function startHttpApi(engine, { log = console.log } = {}) {
       switch (route) {
         case '/state': {
           const s = engine.self;
+          const attempts = engine.reconAttempts ?? 0;
           return json(res, 200, {
             name: engine.name,
             host: 'mineflayer',
@@ -62,6 +63,12 @@ export function startHttpApi(engine, { log = console.log } = {}) {
             session_info: engine.sessionInfo,
             paused: engine.paused,
             pause_reason: engine.pauseReason,
+            // 断线重连可观测（TOB-475）：重连进行中 / 已尝试次数 / 下次重连剩余毫秒
+            reconnecting: engine.sessionState !== 'playing' && attempts > 0,
+            reconnect_attempts: attempts,
+            next_retry_in: engine.reconnectDueAt != null
+              ? Math.max(0, engine.reconnectDueAt - Date.now())
+              : null,
             self: s ? {
               ...s,
               held: s.held ?? null,
