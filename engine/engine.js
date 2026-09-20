@@ -1106,9 +1106,15 @@ ${e.stack ?? ''}`);
   }
 
   setParam(k, v) {
-    // 控制总线统一入口：schema 校验 + 持久化（params 修改渠道收敛点）
+    // 控制总线统一入口：schema 校验 + 脚本校验钩 + 持久化（params 修改渠道收敛点）
     if (!this.paramsSchema.has(k)) throw TYPE_ERR('param.unknown', k);
     const coerced = this.coerceParam(v, this.paramsSchema.get(k).type, k);
+    // 脚本注册的校验钩（TOB-522，如 transfer_pattern 热更校验）：
+    // 非空返回 = 拒绝，抛错前未落任何状态 -> 旧值继续生效
+    if (this.lua) {
+      const reject = this.luaFn('__params_validate')(k, JSON.stringify(coerced ?? null));
+      if (reject) throw TYPE_ERR('param.rejected', `${k}: ${reject}`);
+    }
     this.paramValues.set(k, coerced);
     this.paramPersist.set(k, coerced);
     this.persistParams();
@@ -1342,6 +1348,7 @@ ${e.stack ?? ''}`);
       const s = this.self;
       if (!s) return '{}';
       return JSON.stringify({
+        username: s.username ?? null,   // bot 自身用户名（TOB-522 最小暴露；接收门/收款判定默认锚定用）
         pos: s.pos, yaw: s.yaw, pitch: s.pitch,
         health: s.health, food: s.food, gamemode: s.gamemode,
         held: s.held ?? null, held_slot: s.heldSlot ?? 0,

@@ -1,4 +1,6 @@
 name: tsl_relay
+# ⚠ DEPRECATED（TOB-522）：收款监听请改用 examples/afk_guard（relay.lua）；
+#   本包仅保留绑定/验证码链路参考，不再演进。
 scripts: [main.lua]
 net:
   - "http://127.0.0.1:18100/*"

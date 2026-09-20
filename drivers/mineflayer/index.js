@@ -217,6 +217,7 @@ export class MineflayerDriver {
       }
     }
     this.emit('self', {
+      username: bot.username ?? null,
       pos: { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z },
       yaw: bot.entity.yaw, pitch: bot.entity.pitch,
       health: bot.health, food: bot.food,

@@ -564,6 +564,30 @@ params = setmetatable({}, {
   __newindex = function() error{ kind = "params.readonly", detail = "params 只能经控制总线修改" } end,
 })
 
+-- params 校验钩（TOB-522）：脚本对单个参数注册校验函数，控制总线 setParam 同步调用。
+-- 约定：fn(value) -> true 通过；nil/false[, 消息] 或 error = 拒绝（消息回传调用方，旧值继续生效）。
+__PARAM_VALIDATORS = {}
+
+function params_validator(key, fn)
+  if type(key) ~= "string" or key == "" or type(fn) ~= "function" then
+    error{ kind = "params.validator_bad", detail = "params_validator(字符串 key, 校验函数)" }
+  end
+  __PARAM_VALIDATORS[key] = fn
+end
+
+-- 引擎侧入口：返回 "" = 通过，非空 = 拒绝理由
+function __params_validate(key, valuej)
+  local fn = __PARAM_VALIDATORS[key]
+  if fn == nil then return "" end
+  local ok, r1, r2 = pcall(fn, decode(valuej))
+  if ok then
+    if r1 == false or r1 == nil then return tostring(r2 or "参数校验失败") end
+    return ""
+  end
+  if type(r1) == "table" then return tostring(r1.detail or r1.kind or "参数校验失败") end
+  return tostring(r1)
+end
+
 -- ---------- persist（引擎 SQLite） ----------
 
 persist = {}
@@ -1105,6 +1129,7 @@ combat = {
 }
 
 self = {
+  username = function() local s = call_query("__q_self", {}); return s and s.username or nil end,
   pos = function() local s = call_query("__q_self", {}); return s and s.pos or nil end,
   health = function() local s = call_query("__q_self", {}); return s and s.health or nil end,
   food = function() local s = call_query("__q_self", {}); return s and s.food or nil end,
