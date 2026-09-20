@@ -7,9 +7,10 @@ const key = (p) => `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`;
 const STACK_MAX = (id) => (id === 'minecraft:iron_sword' || id === 'minecraft:diamond_sword' ? 1 : 64);
 
 export class MockDriver {
-  constructor({ start = { x: 0, y: 64, z: 0 }, log = () => {} } = {}) {
+  constructor({ start = { x: 0, y: 64, z: 0 }, username = 'TestBot', log = () => {} } = {}) {
     this.emitter = new EventEmitter();
     this.log = log;
+    this.username = username;
     // 世界
     this.blocks = new Map();       // key -> block name
     this.containerSlots = new Map(); // key -> Array(size) of {id,count}|null
@@ -169,6 +170,7 @@ export class MockDriver {
   selfSnapshot() {
     const held = this.inv[this.heldSlot];
     return {
+      username: this.username,
       pos: { ...this.botPos }, yaw: this.botYaw, pitch: this.botPitch,
       health: this.botHealth, food: this.botFood, gamemode: 'survival',
       held: held ? { ...held } : null, heldSlot: this.heldSlot,

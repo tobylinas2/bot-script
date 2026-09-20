@@ -12,7 +12,7 @@
 -- ============================================================
 
 params {
-  bot_name        = { type = 'string',  default = 'MixTobyInjSave', visible = true, help = 'bot 进服玩家名' },
+  bot_name        = { type = 'string',  default = '',  visible = true, help = 'bot 进服玩家名（空 = 自动锚定 bot 自身用户名）' },
   super_admin     = { type = 'string',  default = '',  visible = true, help = '超级管理员玩家名（唯一）' },
   auto_accept_tpa = { type = 'boolean', default = true, visible = true, help = '未锁定时自动接受 tpa/tpahere' },
   anti_afk        = { type = 'boolean', default = true, visible = true, help = '定期微调视角防挂机检测' },
@@ -29,6 +29,13 @@ persist.table "Admins" { player = 'string:key', added_by = 'string', at = 'numbe
 -- ---------- 工具 ----------
 
 local function super() return tostring(params.super_admin or '') end
+
+-- bot 名：显式 bot_name 优先；空 = 锚定 bot 自身用户名（TOB-520 吸收：默认零手改）
+local function bot_name_or_self()
+  local n = tostring(params.bot_name or '')
+  if n ~= '' then return n end
+  return tostring(self.username() or '')
+end
 
 local function is_admin(name)
   if name == '' then return false end
@@ -56,7 +63,7 @@ local function parse_bracket(msg)
   local head, text = (msg.raw or ''):match('^%[([^%]]+)%]%s*(.+)$')
   if not head then return nil end
   local sender, arrow, recipient = head:match('^(%S+)%s+(%S+)%s+(%S+)$')
-  if sender and arrow and recipient == tostring(params.bot_name) and text ~= '' then
+  if sender and arrow and recipient == bot_name_or_self() and text ~= '' then
     return sender, text:match('^%s*(.-)%s*$')
   end
   return nil

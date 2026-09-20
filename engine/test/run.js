@@ -3,6 +3,7 @@
 // 注：wasmoon 的 global.get 对 Lua table 返回不可靠 POJO —— 测试脚本一律把结果
 // 写成 __R_* 标量全局（string/number/boolean），JS 侧直接读。
 import assert from 'node:assert';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
@@ -918,6 +919,156 @@ test('POST /session：日志与 /state 全程无 token 明文', async () => {
   assert.ok(!all.includes(SECRET), '日志与 /state 不得出现 token 明文');
   assert.ok(!all.includes(SESSION_ACCOUNT.accessToken), '旧 token 明文同样不得出现');
   await engine.stop();
+});
+
+// ============================================================
+// 12. 收款判定（TOB-522：username 暴露 + params 校验钩 + transfer 结构化上报）
+// ============================================================
+
+test('self.username：driver 最小暴露，params_validator 校验钩拒绝非法值、旧值生效', async () => {
+  script('t14.lua', `
+    __R_username = nil
+    task('getname', function()
+      wait_until(function() return self.username() ~= nil end)
+      __R_username = self.username()
+    end)
+    on_start(function() task.spawn('getname') end)
+    params_validator('pat', function(v)
+      if tostring(v):find('BAD', 1, true) then return nil, '拒绝：含 BAD' end
+      return true
+    end)
+  `);
+  const driver = new MockDriver({ username: 'RelayBot' });
+  const { engine } = await makeEngine({
+    scripts: ['t14.lua'],
+    driver,
+    yaml: { params: { pat: { type: 'string', default: 'safe-old' }, other: { type: 'string', default: '' } } },
+  });
+  assert.ok(await waitFor(() => g(engine, '__R_username') === 'RelayBot', 3000), 'self.username 应来自 driver 快照');
+
+  // 校验钩：拒绝 + 错误可读 + 旧值继续生效
+  try {
+    engine.setParam('pat', 'xBADx');
+    assert.fail('非法值应被拒绝');
+  } catch (e) {
+    assert.strictEqual(e.kind, 'param.rejected');
+    assert.ok(String(e.detail).includes('BAD'), '错误信息应可读');
+  }
+  assert.strictEqual(engine.paramValues.get('pat'), 'safe-old', '被拒后旧值继续生效');
+  engine.setParam('pat', 'good-new');
+  assert.strictEqual(engine.paramValues.get('pat'), 'good-new', '合法值正常落参');
+
+  // 未注册校验钩的参数不受影响；未知参数仍拒（TYPE_ERR 抛的是普通对象，按 kind 断言）
+  engine.setParam('other', 'v');
+  assert.strictEqual(engine.paramValues.get('other'), 'v');
+  try {
+    engine.setParam('ghost', 1);
+    assert.fail('未知参数应被拒绝');
+  } catch (e) {
+    assert.strictEqual(e.kind, 'param.unknown');
+  }
+  await engine.stop();
+});
+
+test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接收门锚定自身用户名 + pattern 热更校验', async () => {
+  const reports = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      reports.push({ url: req.url, key: req.headers['x-api-key'], body: JSON.parse(body || '{}') });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ actions: [] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const netAllow = `http://127.0.0.1:${port}/*`;
+
+  const driver = new MockDriver({ username: 'RelayBot' });
+  const engine = new BotEngine({
+    name: 'afk-relay-test',
+    scripts: [path.join(EXAMPLES, 'afk_guard', 'relay.lua')],
+    net: [netAllow],
+    params: {
+      bot_name: '',   // 默认去锚定：空 = 锚定 bot 自身用户名
+      api_key: 'bsk_test_key',
+      api_base: `http://127.0.0.1:${port}`,
+      instance_id: 'inst-1',
+      // 清单形态（带 type）：进 schema 校验面，/params 热更与校验钩可用
+      transfer_pattern: { type: 'string', default: '你收到了来自 (%S+) 的 ([%d%.]+) C' },
+    },
+  }, driver, {
+    scriptDir: path.join(EXAMPLES, 'afk_guard'),
+    boundary: { net: [netAllow] },
+  });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+  const transfers = () => reports.filter((r) => r.body.type === 'transfer');
+
+  // 默认参数部署（零手改）：bot 收自身用户名款项 → transfer 上报
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  assert.ok(await waitFor(() => transfers().length === 1, 3000), '默认参数应产生 transfer 上报');
+  const tr = transfers()[0];
+  assert.strictEqual(tr.body.data.payer, 'Steve');
+  assert.strictEqual(tr.body.data.amount, 12.5);
+  assert.strictEqual(tr.url, '/api/v1/instances/inst-1/report');
+  assert.strictEqual(tr.key, 'bsk_test_key', '上报认证面不变：X-Api-Key');
+  assert.ok(reports.some((r) => r.body.type === 'chat_line' && r.body.data.raw.includes('你收到了来自 Steve')),
+    'chat_line 原文照旧上报（平台留日志用）');
+
+  // 接收门默认锚定自身用户名：发给 RelayBot 的私聊上报 tsl_cmd；发给别人不上报
+  sysChat('[Alice x RelayBot] 余额');
+  assert.ok(await waitFor(() => reports.some((r) => r.body.type === 'tsl_cmd' && r.body.data.player === 'Alice'), 3000),
+    '接收门空参数应锚定自身用户名');
+  const tslCount = reports.filter((r) => r.body.type === 'tsl_cmd').length;
+  sysChat('[Alice x OtherBot] 余额');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.strictEqual(reports.filter((r) => r.body.type === 'tsl_cmd').length, tslCount, '非本 bot 私聊不应上报');
+
+  // pattern 热更校验：非法拒绝、错误可读、旧值继续生效
+  const badPatterns = [
+    ['x'.repeat(300), '过长'],
+    ['你收到了来自 (%S+ 的 ([%d%.]+) C', '语法'],
+    ['(%S+) (%S+) (%S+)', '捕获'],
+  ];
+  for (const [p, why] of badPatterns) {
+    try {
+      engine.setParam('transfer_pattern', p);
+      assert.fail(`非法 pattern（${why}）应被拒绝`);
+    } catch (e) {
+      assert.strictEqual(e.kind, 'param.rejected', `${why} 拒绝应 param.rejected`);
+      assert.ok(String(e.detail).length > 0, `${why} 错误信息应可读`);
+    }
+  }
+  assert.strictEqual(engine.paramValues.get('transfer_pattern'), '你收到了来自 (%S+) 的 ([%d%.]+) C',
+    '被拒后旧 pattern 继续生效');
+  sysChat('[TSLLLLL] 你收到了来自 Bob 的 3 C');
+  assert.ok(await waitFor(() => transfers().length === 2, 3000), '被拒热更后旧 pattern 仍工作');
+
+  // 合法热更即时生效：换格式后新格式命中、旧格式不再命中
+  engine.setParam('transfer_pattern', '(%S+) 给 RelayBot 转了 ([%d%.]+) 金');
+  sysChat('Bob 给 RelayBot 转了 3 金');
+  assert.ok(await waitFor(() => transfers().length === 3, 3000), '热更 pattern 即时生效');
+  assert.strictEqual(transfers()[2].body.data.payer, 'Bob');
+  assert.strictEqual(transfers()[2].body.data.amount, 3);
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.strictEqual(transfers().length, 3, '旧格式不再命中');
+
+  // 重启保留（paramPersist）
+  assert.strictEqual(engine.paramPersist.get('transfer_pattern'), '(%S+) 给 RelayBot 转了 ([%d%.]+) 金');
+
+  // 空 pattern = 关闭收款判定（合法值）
+  engine.setParam('transfer_pattern', '');
+  sysChat('Bob 给 RelayBot 转了 9 金');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.strictEqual(transfers().length, 3, '空 pattern 应关闭收款判定');
+
+  await engine.stop();
+  srv.close();
 });
 
 // ============================================================

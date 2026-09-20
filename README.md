@@ -74,6 +74,26 @@ node test/live.js     # 构建场景 + 启动 bank/organizer/coal_guard + 断言
 organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追击+放下即停+guard stop（2 项）；
 内建 pause/resume（1 项）；HTTP 控制通道（§17）鉴权/state/params/cmd/tasks/cancel/logs/persist/caps（3 项）。
 
+## 收款 bot 部署与参数（TOB-522）
+
+以 `examples/afk_guard` 为生产链路：relay.lua 在引擎侧识别收款系统聊天，向平台上报
+结构化 `{type: 'transfer', data: {payer, amount}}`（chat_line 原文照旧上报留日志；认证面不变，X-Api-Key）。
+
+```yaml
+# bot.yaml 关键参数（默认值部署即用，零手改）
+params:
+  bot_name:         { type: string, default: '', desc: bot 进服玩家名；空 = 自动锚定 bot 自身用户名 }
+  transfer_pattern: { type: string, default: '你收到了来自 (%S+) 的 ([%d%.]+) C', desc: 收款识别 Lua pattern }
+```
+
+- **默认锚定自身**：`bot_name` 默认空，引擎从驱动快照取 bot 用户名（`self.username()`），
+  收款判定与私聊接收门都无需再硬编码 `MixTobyInjSave`；显式设置仍优先生效（兼容存量实例）。
+- **热更**：运行期 `POST /params` 修改 `transfer_pattern` 即时生效、不断线、持久化重启保留。
+- **热更校验**（非法即拒绝、回传可读错误、旧值继续生效）：长度 ≤256 字节；必须是合法 Lua pattern；
+  恰好 2 个捕获（1=玩家名 2=金额）。空值 = 关闭收款判定（合法值）。
+- 服务器收款副本格式不同（如 "X 给 Y 转了 N 金"）时，按上述规则热改 pattern 即可，无需改代码。
+- 旧示例 `examples/tsl_relay` 已标记 DEPRECATED：收款监听由 afk_guard 承接，仅保留绑定/验证码链路参考。
+
 ## 实现要点（与设计文档的对应）
 
 - 调度：Lua 协程 + 就绪队列；yield 协议 `<token>|<kind>|<txn>`；事件处理器为脱离根

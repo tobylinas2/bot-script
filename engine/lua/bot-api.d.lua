@@ -177,6 +177,12 @@ function params(schema) end
 ---@return any
 function params.__index(k) end
 
+---参数校验钩（TOB-522）：控制总线 setParam（/params 热更）时同步调用 fn(value)。
+---fn 返回 true = 通过；返回 nil/false[, 消息] 或 error = 拒绝（消息回传调用方，旧值继续生效）。
+---@param key string
+---@param fn fun(value: any): boolean, string?
+function params_validator(key, fn) end
+
 -- ==========================================================================
 -- persist（实例 SQLite；随实例隔离）
 -- ==========================================================================
@@ -468,6 +474,10 @@ function combat.dig(pos) end
 function combat.place(pos, item) end
 
 ---@class self
+---bot 自身用户名（TOB-522 最小暴露；接收门/收款判定默认锚定用）
+---@return string|nil
+function self.username() end
+
 ---@return {x,y,z}|nil
 function self.pos() end
 
