@@ -1095,9 +1095,10 @@ function startPayMock() {
         ts: Date.now(),
       };
       hits.push(rec);
-      const [status, data] = responder(rec) ?? [200, {}];
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data));
+      const [status, data, ctype] = responder(rec) ?? [200, {}];
+      // data 为字符串时按原文返回（模拟反代 HTML 5xx 等非 JSON body）
+      res.writeHead(status, { 'Content-Type': ctype ?? 'application/json' });
+      res.end(typeof data === 'string' ? data : JSON.stringify(data));
     });
   });
   return {
@@ -1272,6 +1273,80 @@ test('afk_guard relay pay 通道重试口径：4xx 终态不重试；5xx 重试 
   assert.ok(await waitFor(() => logs.filter((l) => l.level === 'error').length > errCount0, 15000),
     '网络错误重试耗尽应留 error 日志');
   engine.setParam('pay_endpoint', '');
+
+  await engine.stop();
+  mock.close();
+});
+
+test('afk_guard relay pay 通道 standalone 形态：无实例桥凭据（api_key/instance_id 空）收款上报照常，实例 report 通道零请求', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+  const logs = [];
+  const TOKEN = 'pay_' + 'c'.repeat(64);
+  const { engine, driver } = makeRelayEngine(mock, {
+    port, logs,
+    extraParams: { api_key: '', instance_id: '', pay_token: TOKEN },
+  });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [200, { ok: true, reply: '已入账 7' }]
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Alex 的 7 C');
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), 'standalone 形态收款行应发 pay notify');
+  const n = mock.notify()[0];
+  assert.strictEqual(n.payToken, TOKEN, 'X-Pay-Token 头应携带签发 token');
+  assert.strictEqual(n.body.payer, 'Alex');
+  assert.strictEqual(n.body.amount, 7);
+  assert.ok(mock.hits.every((h) => h.path === '/api/pay/notify'),
+    '实例 report 通道必须零请求（api_key/instance_id 空也不得兜底回落）');
+  assert.strictEqual(mock.transfers().length, 0);
+  assert.ok(!mock.hits.some((h) => h.body.type === 'chat_line'), '无实例桥时不上报 chat_line');
+  assert.ok(await waitFor(() => driver.outgoingChat.includes('Alex 已入账 7'), 3000), 'reply 回发照常');
+
+  await engine.stop();
+  mock.close();
+});
+
+test('afk_guard relay pay 通道重试口径：非 JSON 5xx（反代 HTML 502）与 5xx 同口径重试；非 JSON 4xx 仍终态', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+  const logs = [];
+  const { engine, driver } = makeRelayEngine(mock, {
+    port, logs,
+    extraParams: { pay_token: 'pay_' + 'd'.repeat(64) },
+  });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+
+  // 1) 500 + text/html：按 HTTP 状态进入 5xx 重试口径（共 4 次尝试 + 退避）
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [500, '<html><body>502 Bad Gateway</body></html>', 'text/html']
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  assert.ok(await waitFor(() => mock.notify().length === 4, 15000),
+    '非 JSON 5xx 应进入与 5xx 一致的重试口径（共 4 次尝试）');
+  assert.ok(mock.notify()[3].ts - mock.notify()[0].ts >= 5000, '重试间应有秒级递增退避');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 4, '重试耗尽后放弃');
+  assert.ok(logs.some((l) => l.level === 'error' && l.msg.includes('pay notify')), '重试耗尽应留 error 日志');
+
+  // 2) 对照：非 JSON 4xx 仍为终态（恰好 1 次请求 + warn）
+  mock.reset();
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [400, '<html>bad request</html>', 'text/html']
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Bob 的 1 C');
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), '非 JSON 4xx 应发出请求');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 1, '非 JSON 4xx 仍为终态不重试');
+  assert.ok(logs.some((l) => l.level === 'warn' && l.msg.includes('pay notify')), '非 JSON 4xx 应留 warn 日志');
 
   await engine.stop();
   mock.close();

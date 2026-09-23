@@ -104,8 +104,9 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - **热更校验**（非法即拒绝、回传可读错误、旧值继续生效）：`transfer_pattern` 长度 ≤256 字节、
   合法 Lua pattern、恰好 2 个捕获（1=玩家名 2=金额），空值 = 关闭收款判定；`pay_token` 长度 ≤128；
   `pay_endpoint` 非空时必须是合法 http(s) URL。
-- **重试口径**：仅网络错误 / 5xx 重试（≤3 次，秒级递增退避后放弃并留 error 日志）；
-  4xx（400/401/429 等）为终态不重试，仅告警。重启丢失未完成的待重试通知为已接受风险
+- **重试口径**：仅网络错误 / 5xx 重试（≤3 次，秒级递增退避后放弃并留 error 日志；按 HTTP
+  状态码归类，5xx 不论 body 形态——含反向代理返回的 HTML 502）；4xx（400/401/429 等）为
+  终态不重试，仅告警。重启丢失未完成的待重试通知为已接受风险
   （平台侧审计缺口 + admin_adjust 冲正兜底）。
 - **standalone 部署**（`pay_endpoint` 指向 api_base 之外的其他源）：需在 bot.yaml `net` 清单
   与实例边界 `net` 各补一行对应 origin 通配（如 `"https://pay.example.com/*"`）；

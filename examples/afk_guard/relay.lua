@@ -162,14 +162,15 @@ local function report_transfer(raw)
     body = json.encode({ payer = payer, amount = n }),
   }
   for attempt = 0, #PAY_RETRY_BACKOFF_MS do
-    local ok2, status, data = pcall(net.jrequest, opts)
+    -- 用 net.request 取原始 status 再手动解 JSON：body 形态（如反代 HTML 502）
+    -- 不影响按 HTTP 状态码归类的重试口径
+    local ok2, res = pcall(net.request, opts)
     local failed = not ok2
-    local retryable = failed and type(status) == 'table' and status.error == 'net.failed'
-    if not failed then
-      retryable = type(status) == 'number' and status >= 500
-    end
+    local status = not failed and type(res) == 'table' and res.status or nil
+    local retryable = (failed and type(res) == 'table' and res.error == 'net.failed')
+      or (type(status) == 'number' and status >= 500)
     if retryable then
-      local why = failed and tostring(status.detail or status.error or 'net.failed')
+      local why = failed and tostring(res.detail or res.error or 'net.failed')
         or ('HTTP ' .. tostring(status))
       if attempt < #PAY_RETRY_BACKOFF_MS then
         local wait = PAY_RETRY_BACKOFF_MS[attempt + 1] / 1000
@@ -180,11 +181,15 @@ local function report_transfer(raw)
       end
     else
       if failed then
-        log.error('relay pay notify 请求异常: %s', tostring(status.detail or status.error or status))
-      elseif type(status) == 'number' and status >= 400 then
-        log.warn('relay pay notify 被拒（终态不重试）: HTTP %s %s', tostring(status), json.encode(data or {}))
+        log.error('relay pay notify 请求异常: %s', tostring(res.detail or res.error or res))
+      elseif type(status) ~= 'number' then
+        log.error('relay pay notify 响应异常: %s', tostring(res))
+      elseif status >= 400 then
+        log.warn('relay pay notify 被拒（终态不重试）: HTTP %s %s', tostring(status),
+          tostring(res.body or ''):sub(1, 120))
       elseif status == 200 then
-        local reply = type(data) == 'table' and data.reply or nil
+        local okj, data = pcall(json.decode, res.body or '')
+        local reply = okj and type(data) == 'table' and data.reply or nil
         if type(reply) == 'string' and reply ~= '' then chat.msg(payer, reply) end
       end
       return
